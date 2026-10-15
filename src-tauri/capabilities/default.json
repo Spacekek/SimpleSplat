@@ -3,5 +3,13 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "notification:default", "opener:allow-reveal-item-in-dir"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-close",
+    "dialog:allow-open",
+    "notification:default",
+    "opener:allow-reveal-item-in-dir"
+  ]
 }

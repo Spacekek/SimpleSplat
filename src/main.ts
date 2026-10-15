@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -22,6 +23,22 @@ type View = "home" | "progress" | "viewer" | "settings";
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const show = (view: View) => (document.body.dataset.view = view);
 const dirOf = (path: string) => path.replace(/[\\/][^\\/]*$/, "");
+const baseName = (path: string) => path.replace(/^.*[\\/]/, "");
+
+// The header bars double as the title bar (tauri.macos/linux.conf.json). macOS keeps its own
+// window buttons over them; Linux has none, so add GNOME's close button to each bar.
+const platform = /Mac/.test(navigator.userAgent) ? "mac" : /Linux/.test(navigator.userAgent) ? "linux" : "other";
+document.body.dataset.platform = platform;
+if (platform === "linux") {
+  for (const end of document.querySelectorAll(".headerbar .end, .osd-bar .end")) {
+    const close = document.createElement("button");
+    close.className = `btn circular window-close ${end.closest(".osd-bar") ? "osd" : ""}`;
+    close.title = "Close";
+    close.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4.5 4.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+    close.onclick = () => getCurrentWindow().close();
+    end.append(close);
+  }
+}
 
 // Settings: the form is the source of truth, remembered between launches.
 const form = $<HTMLFormElement>("settings-form");
@@ -43,12 +60,20 @@ function values(): Record<string, string | boolean> {
   }
   return v;
 }
+function updateSummary() {
+  const v = values();
+  const detail = String(v.detail).replace(/^./, (c) => c.toUpperCase());
+  const where = v.output === "folder" && v.outDir ? `saved in ${baseName(String(v.outDir))}` : "saved next to the input";
+  $("summary").textContent = `${detail} detail · ${where}`;
+}
+updateSummary();
 form.addEventListener("change", () => {
+  updateSummary();
   try {
     localStorage.setItem("settings", JSON.stringify(values()));
   } catch {}
 });
-$("open-settings").onclick = () => show("settings");
+$("open-settings").onclick = $("summary").onclick = () => show("settings");
 $("close-settings").onclick = () => show("home");
 $("choose-out").onclick = async () => {
   const dir = await open({ directory: true });
@@ -75,14 +100,18 @@ function request(input: string) {
   };
 }
 
-// Viewers. The camera starts at the first frame's pose when the pipeline wrote view.json.
+// Viewers. The camera starts at the first frame's pose when the pipeline wrote view.json; the
+// viewer's automatic turntable starts paused.
 async function makeViewer(container: HTMLElement, ply: string, viewDir: string, ui: boolean) {
   const settings = defaultSettings("object");
   const view = await fetch(convertFileSrc(`${viewDir}/view.json`))
     .then((r) => (r.ok ? r.json() : null))
     .catch(() => null);
   if (view) settings.cameras = [{ initial: view }];
-  return createViewer({ container, settings, contentUrl: convertFileSrc(ply), contentFilename: "scene.ply", ui });
+  const viewer = await createViewer({ container, settings, contentUrl: convertFileSrc(ply), contentFilename: "scene.ply", ui, noanim: true });
+  // Start in orbit mode (drag to look around); the play button still runs the turntable.
+  viewer.events.once("loaded:changed", () => (viewer.state.cameraMode = "orbit"));
+  return viewer;
 }
 
 let mainViewer: Viewer | null = null;
@@ -100,11 +129,29 @@ $("new").onclick = () => {
   show("home");
 };
 
-// A job: progress view, still previews, optional live exploring.
+// Progress: one row per pipeline stage, filled in as events arrive.
+const PENDING = ["Preparing images", "Finding camera positions", "Training the splat"];
+const row = (n: number) => $("stages").querySelector<HTMLElement>(`li[data-n="${n}"]`);
+function renderStages() {
+  $("stages").replaceChildren(
+    ...PENDING.map((name, i) => {
+      const li = document.createElement("li");
+      li.dataset.n = String(i + 1);
+      li.className = "row";
+      li.dataset.state = "pending";
+      li.innerHTML = `<span class="status"></span><div class="row-text"><div class="title"></div><div class="subtitle"></div><progress hidden></progress></div>`;
+      li.querySelector(".title")!.textContent = name;
+      return li;
+    }),
+  );
+}
+function addDetail(li: HTMLElement | null, text: string) {
+  li?.querySelector(".subtitle")!.append(Object.assign(document.createElement("div"), { textContent: text }));
+}
+
 let projectDir = "";
 let latestPreview = "";
 let explorer: Viewer | null = null;
-const log = (line: string) => ($("log").textContent += line + "\n");
 
 async function begin(path: string) {
   $("error").hidden = true;
@@ -113,11 +160,11 @@ async function begin(path: string) {
     return openViewer(path, dirOf(path));
   }
   projectDir = latestPreview = "";
-  $("stages").replaceChildren();
-  $("log").textContent = $("steps-text").textContent = "";
-  $<HTMLProgressElement>("steps-bar").hidden = true;
+  renderStages();
+  $("project-name").textContent = baseName(path);
   $<HTMLCanvasElement>("preview-canvas").getContext("2d")!.clearRect(0, 0, 800, 450);
-  $<HTMLButtonElement>("explore").disabled = true;
+  $("preview-empty").hidden = false;
+  $("explore").hidden = true;
   $<HTMLButtonElement>("stop").disabled = false;
   $("stop").textContent = "Stop";
   show("progress");
@@ -125,62 +172,62 @@ async function begin(path: string) {
   invoke("start", { request: request(path) }).catch((err) => fail(String(err)));
 }
 
+// Pipeline errors end with "\nDetails: <log path>"; the path goes behind the Show log button.
+let errorLog = "";
 function fail(message: string) {
   closeExplorer();
-  $("error-text").textContent = message;
+  const [text, logPath = ""] = message.split("\nDetails: ");
+  errorLog = logPath.trim();
+  $("error-text").textContent = text;
+  $("error-log").hidden = !errorLog;
   $("error").hidden = false;
   show("home");
 }
-$("error-log").onclick = () => {
-  const log = $("error-text").textContent?.split("Details: ")[1]?.trim();
-  if (log) revealItemInDir(log);
-};
+$("error-close").onclick = () => ($("error").hidden = true);
+$("error-log").onclick = () => revealItemInDir(errorLog);
 
 listen<JobEvent>("job", ({ payload: e }) => {
-  const stages = $("stages");
   switch (e.kind) {
     case "project":
       projectDir = e.path;
-      log(`Project folder: ${e.path}`);
       break;
     case "stage": {
-      const li = document.createElement("li");
-      li.dataset.n = String(e.n);
+      const li = row(e.n);
+      if (!li) break;
+      // "Training the splat (Brush)" -> name plus a small tool tag
+      const [, label, tool] = e.name.match(/^(.*?)(?: \((.+)\))?$/)!;
+      const name = li.querySelector(".title")!;
+      name.textContent = label;
+      if (tool) name.append(Object.assign(document.createElement("span"), { className: "tool", textContent: tool }));
       li.dataset.state = e.skipped ? "done" : "running";
-      li.textContent = e.skipped ? `${e.name} (already done)` : `${e.name}…`;
-      stages.append(li);
-      log(li.textContent);
+      if (e.skipped) addDetail(li, "Already done");
       break;
     }
     case "stageDone": {
-      const li = stages.querySelector<HTMLElement>(`[data-n="${e.n}"]`);
+      const li = row(e.n);
       if (li) {
         li.dataset.state = "done";
-        li.firstChild!.textContent = li.firstChild!.textContent!.replace(/…$/, ` (${e.secs}s)`);
+        const bar = li.querySelector("progress")!;
+        if (!bar.hidden) li.querySelector(".subtitle")!.textContent = "";
+        bar.hidden = true;
+        addDetail(li, `Took ${e.secs < 90 ? `${e.secs} s` : `${Math.round(e.secs / 60)} min`}`);
       }
-      $<HTMLProgressElement>("steps-bar").hidden = true;
-      $("steps-text").textContent = "";
-      log(`done in ${e.secs}s`);
       break;
     }
-    case "info": {
-      const span = Object.assign(document.createElement("span"), { className: "info", textContent: e.text });
-      stages.lastElementChild?.append(span);
-      log(e.text);
+    case "info":
+      addDetail($("stages").querySelector<HTMLElement>('li[data-state="running"]'), e.text);
       break;
-    }
     case "steps": {
-      const bar = $<HTMLProgressElement>("steps-bar");
-      bar.hidden = false;
-      bar.max = e.total;
-      bar.value = e.iter;
-      $("steps-text").textContent = `${e.iter.toLocaleString()} of ${e.total.toLocaleString()} training steps`;
+      const li = $("stages").querySelector<HTMLElement>('li[data-state="running"]');
+      if (!li) break;
+      const bar = li.querySelector("progress")!;
+      Object.assign(bar, { hidden: false, max: e.total, value: e.iter });
+      li.querySelector(".subtitle")!.textContent = `${e.iter.toLocaleString()} of ${e.total.toLocaleString()} steps`;
       break;
     }
     case "preview":
       latestPreview = e.path;
-      $<HTMLButtonElement>("explore").disabled = false;
-      log(`preview: ${e.path}`);
+      $("explore").hidden = false;
       capturePreview(e.path);
       break;
   }
@@ -210,8 +257,9 @@ function capturePreview(ply: string) {
       const { width, height, data } = await viewer.captureFrame({ width: 800, height: 450 });
       const pixels = Uint8ClampedArray.from(atob(data), (c) => c.charCodeAt(0));
       $<HTMLCanvasElement>("preview-canvas").getContext("2d")!.putImageData(new ImageData(pixels, width, height), 0, 0);
+      $("preview-empty").hidden = true;
     } catch (err) {
-      log(`preview failed: ${err}`);
+      console.error("preview failed", err);
     } finally {
       viewer.destroy();
     }

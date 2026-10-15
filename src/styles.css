@@ -1,21 +1,92 @@
+/* GNOME / libadwaita look: palette, header bars, boxed lists, pills, OSD buttons. */
 :root {
   color-scheme: light dark;
-  font-family: system-ui, sans-serif;
-  --muted: color-mix(in srgb, currentColor 55%, transparent);
-  --line: color-mix(in srgb, currentColor 20%, transparent);
+  --window-bg: #fafafb;
+  --view-bg: #ffffff;
+  --headerbar-bg: #ffffff;
+  --card-bg: #ffffff;
+  --fg: rgb(0 0 6 / 0.8);
+  --accent-bg: #3584e4;
+  --accent: #1c71d8;
+  --destructive-bg: #e01b24;
+  --error: #c01c28;
+  --border: rgb(0 0 6 / 0.12);
+  --shade: rgb(0 0 6 / 0.07);
+  --fill: color-mix(in srgb, currentColor 10%, transparent);
+  --fill-hover: color-mix(in srgb, currentColor 15%, transparent);
+  --fill-active: color-mix(in srgb, currentColor 30%, transparent);
+  --toggle-active-bg: var(--view-bg);
+  --card-shadow:
+    0 0 0 1px rgb(0 0 6 / 0.03),
+    0 1px 3px 1px rgb(0 0 6 / 0.07),
+    0 2px 6px 2px rgb(0 0 6 / 0.03);
+  font:
+    14.5px/1.4 "Adwaita Sans",
+    Cantarell,
+    Inter,
+    -apple-system,
+    system-ui,
+    sans-serif;
+  color: var(--fg);
+  background: var(--window-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --window-bg: #222226;
+    --view-bg: #1d1d20;
+    --headerbar-bg: #2e2e32;
+    --card-bg: rgb(255 255 255 / 0.08);
+    --fg: #ffffff;
+    --accent: #78aeed;
+    --destructive-bg: #c01c28;
+    --error: #ff7b63;
+    --border: rgb(255 255 255 / 0.12);
+    --shade: rgb(0 0 6 / 0.36);
+    --toggle-active-bg: rgb(255 255 255 / 0.2);
+    --card-shadow:
+      0 0 0 1px rgb(0 0 6 / 0.09),
+      0 1px 3px 1px rgb(0 0 6 / 0.2),
+      0 2px 6px 2px rgb(0 0 6 / 0.1);
+  }
 }
 
 html,
 body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
 }
 
+/* `hidden` must win over the display rules below. */
+[hidden] {
+  display: none !important;
+}
+
+h1,
+h3,
+p {
+  margin: 0;
+}
+
+code {
+  font: 0.9em ui-monospace, "Adwaita Mono", monospace;
+}
+
+.dim {
+  opacity: 0.55;
+}
+
+.caption {
+  font-size: 0.85em;
+}
+
+/* Views: one visible at a time. */
 body > section {
   display: none;
   box-sizing: border-box;
   height: 100%;
-  padding: 1.5rem;
 }
 
 body[data-view="home"] #home,
@@ -26,65 +97,533 @@ body[data-view="settings"] #settings {
   flex-direction: column;
 }
 
-#home {
-  justify-content: center;
-  align-items: center;
-  gap: 1rem;
-}
-
-#drop {
-  text-align: center;
-  padding: 3rem 4rem;
-  border: 2px dashed var(--line);
-  border-radius: 12px;
-}
-
-body.dragging #drop {
-  border-color: Highlight;
-}
-
-.hint {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.corner {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-}
-
-#error {
-  max-width: 36rem;
-  white-space: pre-wrap;
-  color: color-mix(in srgb, red 70%, currentColor);
-}
-
-#stages {
-  padding-left: 1.2rem;
-}
-
-#stages li[data-state="done"]::after {
-  content: " ✓";
-}
-
-#stages li .info {
-  display: block;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-#steps-bar {
-  width: 100%;
-}
-
-#preview {
+/* Header bar: it is the window's title bar (drag to move, double-click to maximise). The title is
+   centred on the window, whatever sits in the start and end slots. */
+.headerbar,
+.osd-bar {
+  flex: none;
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 0 6px;
+}
+
+.headerbar {
+  background: var(--headerbar-bg);
+  box-shadow: 0 1px var(--shade);
+}
+
+.start,
+.end {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.headerbar .window-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* macOS keeps its window buttons, floating over the start of the bar. */
+body[data-platform="mac"] .start {
+  padding-left: 72px;
+}
+
+/* Linux has no system title bar, so the bar carries GNOME's close button. */
+.window-close {
+  width: 24px;
+  min-height: 24px;
+  height: 24px;
+  margin-left: 6px;
+}
+
+#home .headerbar {
+  background: transparent;
+  box-shadow: none;
+}
+
+.window-title {
+  text-align: center;
+  line-height: 1.2;
+}
+
+.window-title .title {
+  font-weight: 700;
+}
+
+.window-title .subtitle {
+  font-size: 0.85em;
+  opacity: 0.55;
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 12px 36px;
+}
+
+.clamp {
+  box-sizing: border-box;
   width: 100%;
-  max-width: 800px;
+  max-width: 624px;
+  margin: 0 auto;
+}
+
+/* Buttons */
+.btn {
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  min-height: 34px;
+  padding: 5px 17px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--fill);
+  cursor: default;
+}
+
+.btn:hover {
+  background: var(--fill-hover);
+}
+
+.btn:active {
+  background: var(--fill-active);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+}
+
+.btn.flat {
+  background: transparent;
+}
+
+.btn.flat:hover {
+  background: var(--fill);
+}
+
+.btn.circular {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.btn.pill {
+  padding: 10px 32px;
+  border-radius: 9999px;
+}
+
+.btn.small {
+  min-height: 0;
+  padding: 3px 10px;
+  font-size: 0.9em;
+  font-weight: 400;
+}
+
+.btn.suggested {
+  background: var(--accent-bg);
+  color: white;
+}
+
+.btn.destructive {
+  background: var(--destructive-bg);
+  color: white;
+}
+
+.btn.suggested:hover,
+.btn.destructive:hover {
+  filter: brightness(1.08);
+}
+
+.btn.suggested:active,
+.btn.destructive:active {
+  filter: brightness(0.9);
+}
+
+.btn.osd {
+  color: white;
+  background: rgb(0 0 0 / 0.65);
+}
+
+.btn.osd:hover {
+  background: rgb(0 0 0 / 0.75);
+}
+
+.btn:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+  outline-offset: 1px;
+}
+
+/* Home: a status page. */
+#home {
+  position: relative;
+}
+
+.status-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 24px 46px;
+  text-align: center;
+}
+
+.status-icon {
+  margin-bottom: 24px;
+}
+
+h1 {
+  font-size: 2em;
+  font-weight: 800;
+}
+
+.description {
+  max-width: 36ch;
+}
+
+.status-page .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+#summary {
+  opacity: 0.55;
+}
+
+#summary:hover {
+  opacity: 1;
+}
+
+/* Drop target highlight over the whole window. */
+body.dragging #home::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border: 2px dashed var(--accent-bg);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-bg) 8%, transparent);
+  pointer-events: none;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: 560px;
+  margin-top: 12px;
+  padding: 10px 12px 10px 16px;
+  text-align: start;
+  border-radius: 12px;
+  background: var(--card-bg);
+  box-shadow: var(--card-shadow);
+}
+
+.banner.error .title {
+  color: var(--error);
+  font-weight: 700;
+}
+
+.banner .subtitle {
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.banner .buttons {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+}
+
+/* Boxed lists and rows (preferences style). */
+.group + .group {
+  margin-top: 24px;
+}
+
+.group-title {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 0 0 8px 2px;
+}
+
+.boxed-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  box-sizing: border-box;
+  padding: 8px 12px;
+}
+
+.boxed-list > .row + .row {
+  border-top: 1px solid var(--border);
+}
+
+.row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.row .subtitle {
+  font-size: 0.85em;
+  opacity: 0.55;
+}
+
+details.group > summary {
+  list-style: none;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+details.group > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.group > summary::before {
+  content: "›";
+  display: inline-block;
+  width: 10px;
+  transition: transform 0.15s;
+}
+
+details[open].group > summary::before {
+  transform: rotate(90deg);
+}
+
+/* Entries and spin buttons */
+.row input[type="number"],
+.row select {
+  font: inherit;
+  color: inherit;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--fill);
+}
+
+.row input[type="number"] {
+  width: 96px;
+  text-align: end;
+}
+
+.row select option {
+  color: black;
+}
+
+input.plain {
+  display: block;
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  outline: none;
+  text-overflow: ellipsis;
+}
+
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--accent-bg);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+/* GNOME switch */
+input.switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 26px;
+  border-radius: 9999px;
+  background: var(--fill-hover);
+  transition: background 0.15s;
+}
+
+input.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 2px 4px rgb(0 0 0 / 0.2);
+  transition: transform 0.15s;
+}
+
+input.switch:checked {
+  background: var(--accent-bg);
+}
+
+input.switch:checked::after {
+  transform: translateX(22px);
+}
+
+/* Toggle group (libadwaita 1.7) */
+.toggle-group {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--fill);
+}
+
+.toggle-group input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-group span {
+  display: block;
+  padding: 4px 14px;
+  border-radius: 6px;
+  font-weight: 700;
+}
+
+.toggle-group label:hover span {
+  background: var(--fill);
+}
+
+.toggle-group input:checked + span {
+  background: var(--toggle-active-bg);
+  box-shadow: 0 1px 3px rgb(0 0 6 / 0.15);
+}
+
+.toggle-group input:focus-visible + span {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+}
+
+/* Progress */
+.columns {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 24px;
+  align-content: start;
+  padding-inline: 24px;
+}
+
+@media (max-width: 860px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.status {
+  flex: none;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--fill-hover);
+  display: grid;
+  place-items: center;
+}
+
+li[data-state="running"] .status {
+  border-color: var(--fill-hover);
+  border-top-color: currentColor;
+  animation: spin 0.8s linear infinite;
+}
+
+li[data-state="done"] .status {
+  border: 0;
+  background: var(--accent-bg);
+}
+
+li[data-state="done"] .status::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border: solid white;
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg);
+}
+
+li[data-state="pending"] .title {
+  opacity: 0.55;
+}
+
+.tool {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  font-size: 0.75em;
+  font-weight: 700;
+  background: var(--fill);
+  vertical-align: 1px;
+}
+
+.row progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 6px 0 2px;
+  appearance: none;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--fill);
+  overflow: hidden;
+}
+
+.row progress::-webkit-progress-bar {
+  background: var(--fill);
+}
+
+.row progress::-webkit-progress-value {
+  background: var(--accent-bg);
+  border-radius: 9999px;
+  transition: width 0.3s;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.card {
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+}
+
+.preview {
+  position: relative;
   aspect-ratio: 16 / 9;
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -100,14 +639,30 @@ body.dragging #drop {
   display: none;
 }
 
-#log {
-  max-height: 12rem;
-  overflow: auto;
-  font-size: 0.8rem;
+.preview-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
 }
 
+.overlay {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+}
+
+#explore-note {
+  margin-top: 8px;
+}
+
+/* Viewer with OSD buttons on top. */
 #viewer {
-  padding: 0;
+  position: relative;
+  background: #000;
 }
 
 #viewer-host {
@@ -115,29 +670,15 @@ body.dragging #drop {
   position: relative;
 }
 
-.bar {
-  margin: 0;
-  padding: 0.5rem 1rem;
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
+.osd-bar {
+  position: absolute;
+  inset: 0 0 auto;
+  padding: 10px 12px 18px;
+  background: linear-gradient(rgb(0 0 0 / 0.35), transparent);
 }
 
-#settings form {
-  max-width: 34rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-#settings label {
-  display: block;
-  margin: 0.3rem 0;
-}
-
-#settings fieldset {
-  border: 1px solid var(--line);
-  border-radius: 8px;
+.osd-bar .pill {
+  padding: 7px 18px;
 }
 
 /* Off-screen viewer used to capture still previews; it needs a real size to render. */
@@ -147,4 +688,10 @@ body.dragging #drop {
   top: 0;
   width: 800px;
   height: 450px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  li[data-state="running"] .status {
+    animation-duration: 3s;
+  }
 }
