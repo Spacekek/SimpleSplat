@@ -61,7 +61,7 @@ Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the
 ### Nix
 - `flake.nix` provides the development environment: Rust (pinned explicitly at 1.95 or newer, since Brush needs it), cargo-tauri, Node, micromamba, and WebKitGTK and friends on Linux.
 - A Nix package for NixOS: COLMAP and ffmpeg from nixpkgs (version recent enough for the global mapper), Brush built with `rustPlatform` at the same pin, wrapped so these come first on `PATH`. Note that nixpkgs `brush` is an unrelated shell.
-- Release builds for macOS, `.deb` and `.rpm` do not use Nix-built binaries.
+- Release builds for macOS, `.deb` and `.rpm` do not use Nix-built binaries, and run outside `nix develop` (plain rustup, Node, micromamba): anything compiled inside the shell can link against `/nix/store` paths.
 
 ### Packaging
 - **macOS (arm64):** ad-hoc signed for now. Before a public release: Developer ID, sign every bundled dylib with hardened runtime, notarize.
@@ -76,7 +76,7 @@ Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the
 - Before each release: real phone videos on real hardware (Apple Silicon, NVIDIA Linux, AMD or Intel Linux).
 
 ### License
-Public repo, Apache-2.0. Bundled tools run as separate programs: Brush (Apache-2.0), COLMAP (BSD), ffmpeg (LGPL), and COLMAP dependencies including GPL parts of SuiteSparse. Their licenses and source pointers ship in `THIRD_PARTY_LICENSES/`.
+Public repo, Apache-2.0. Bundled tools run as separate programs: Brush (Apache-2.0), COLMAP (BSD), ffmpeg (LGPL), and COLMAP dependencies including GPL parts of SuiteSparse. Their licenses and source pointers ship in `THIRD_PARTY_LICENSES/` (the bundle script collects them for the 103 conda packages it ships). Still missing before a public release: notices for the Rust crates compiled into Brush and into the app itself (generate with `cargo-about`).
 
 ## Spike results (2026-10-15, Apple M5, 24 GB, macOS 26.5)
 
@@ -89,7 +89,7 @@ Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a 
 - [x] Brush: flags, periodic export, piped progress (see Brush notes), distortion models. No GPU probe flag; GPU errors would surface within seconds of starting.
 - [x] Orientation: Brush's own up estimate is tilted about 18° on raw COLMAP output. After `model_orientation_aligner --method IMAGE-ORIENTATION` (instant), up is -Y, and the SuperSplat viewer, placed at frame 1's pose, matches the photo.
 - [x] Bundle size: see Packaging.
-- [ ] Tauri copies the conda folder intact as a resource (symlinks, executable bits). Check in the scaffold step.
+- [x] Tauri copies the tools folder intact as a resource: executable bits kept, and the bundle script copies real files instead of symlinks. The release `.app` (428 MB uncompressed) finds and runs all tools with none of them on `PATH`.
 - [ ] `captureFrame()` for still previews, and the viewer inside Tauri's WKWebView (the spike used headless Chrome). Check in the app step.
 - [ ] Loop closure on a longer video that returns to its start (sequential matching without loop detection may drift).
 
@@ -105,7 +105,7 @@ Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a 
 ## Build order
 
 1. ~~Mac spike~~ done, see results above.
-2. Scaffold: `flake.nix`, Tauri vanilla-ts app, bundle script.
+2. ~~Scaffold~~ done on macOS: `flake.nix` (Linux shell evaluates but has not run on Linux yet), Tauri vanilla-ts app, `scripts/bundle_tools.py` (Linux `ldd` path untested).
 3. Pipeline + CLI: the Rust pipeline module driven from the command line, so it is usable and testable before any UI exists.
 4. Mac app end to end: all four views on top of the same pipeline, notifications, update notice.
 5. CI: test dataset, unit tests, smoke runs, release builds.

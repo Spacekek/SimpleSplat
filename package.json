@@ -1,0 +1,18 @@
+{
+  "name": "simplesplat",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "tools": "python3 scripts/bundle_tools.py"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}

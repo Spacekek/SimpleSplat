@@ -1,0 +1,13 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  padding: 1rem 1.5rem;
+}
+
+#tools {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
