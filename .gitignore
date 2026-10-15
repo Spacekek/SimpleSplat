@@ -5,3 +5,4 @@ src-tauri/tools
 .DS_Store
 *.log
 /*.mp4
+/*_splat/

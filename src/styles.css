@@ -1,13 +1,150 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, sans-serif;
+  --muted: color-mix(in srgb, currentColor 55%, transparent);
+  --line: color-mix(in srgb, currentColor 20%, transparent);
 }
 
-main {
-  padding: 1rem 1.5rem;
+html,
+body {
+  margin: 0;
+  height: 100%;
 }
 
-#tools {
-  font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
+body > section {
+  display: none;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 1.5rem;
+}
+
+body[data-view="home"] #home,
+body[data-view="progress"] #progress,
+body[data-view="viewer"] #viewer,
+body[data-view="settings"] #settings {
+  display: flex;
+  flex-direction: column;
+}
+
+#home {
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+}
+
+#drop {
+  text-align: center;
+  padding: 3rem 4rem;
+  border: 2px dashed var(--line);
+  border-radius: 12px;
+}
+
+body.dragging #drop {
+  border-color: Highlight;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.corner {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+}
+
+#error {
+  max-width: 36rem;
+  white-space: pre-wrap;
+  color: color-mix(in srgb, red 70%, currentColor);
+}
+
+#stages {
+  padding-left: 1.2rem;
+}
+
+#stages li[data-state="done"]::after {
+  content: " ✓";
+}
+
+#stages li .info {
+  display: block;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+#steps-bar {
+  width: 100%;
+}
+
+#preview {
+  position: relative;
+  width: 100%;
+  max-width: 800px;
+  aspect-ratio: 16 / 9;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+#preview-canvas,
+#explore-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#explore-host:empty {
+  display: none;
+}
+
+#log {
+  max-height: 12rem;
+  overflow: auto;
+  font-size: 0.8rem;
+}
+
+#viewer {
+  padding: 0;
+}
+
+#viewer-host {
+  flex: 1;
+  position: relative;
+}
+
+.bar {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+#settings form {
+  max-width: 34rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+#settings label {
+  display: block;
+  margin: 0.3rem 0;
+}
+
+#settings fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+/* Off-screen viewer used to capture still previews; it needs a real size to render. */
+#capture-host {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 800px;
+  height: 450px;
 }

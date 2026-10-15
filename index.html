@@ -7,10 +7,86 @@
     <title>SimpleSplat</title>
     <script type="module" src="/src/main.ts"></script>
   </head>
-  <body>
-    <main>
-      <h1>SimpleSplat</h1>
-      <ul id="tools"></ul>
-    </main>
+  <body data-view="home">
+    <section id="home">
+      <div id="drop">
+        <h1>SimpleSplat</h1>
+        <p>Drop a video or a folder of photos here</p>
+        <p>
+          <button id="choose-video">Choose video…</button>
+          <button id="choose-folder">Choose photo folder…</button>
+        </p>
+        <p class="hint">Or drop a <code>.ply</code> to look at it.</p>
+      </div>
+      <div id="error" hidden>
+        <p id="error-text"></p>
+        <button id="error-log">Show log</button>
+      </div>
+      <button id="open-settings" class="corner">Settings</button>
+    </section>
+
+    <section id="progress">
+      <ol id="stages"></ol>
+      <p id="steps-text"></p>
+      <progress id="steps-bar" value="0" max="1" hidden></progress>
+      <div id="preview">
+        <canvas id="preview-canvas" width="800" height="450"></canvas>
+        <div id="explore-host"></div>
+      </div>
+      <p id="explore-note" hidden>Training is slower while you explore.</p>
+      <p>
+        <button id="explore" disabled>Explore</button>
+        <button id="stop">Stop</button>
+      </p>
+      <details>
+        <summary>Log</summary>
+        <pre id="log"></pre>
+      </details>
+    </section>
+
+    <section id="viewer">
+      <div id="viewer-host"></div>
+      <p class="bar">
+        <button id="reveal">Show in Finder</button>
+        <button id="new">New splat</button>
+      </p>
+    </section>
+
+    <section id="settings">
+      <form id="settings-form">
+        <h2>Settings</h2>
+        <fieldset>
+          <legend>Detail</legend>
+          <label><input type="radio" name="detail" value="low" /> Low (fastest)</label>
+          <label><input type="radio" name="detail" value="medium" checked /> Medium</label>
+          <label><input type="radio" name="detail" value="high" /> High (best, slowest)</label>
+        </fieldset>
+        <fieldset>
+          <legend>Save results</legend>
+          <label><input type="radio" name="output" value="next" checked /> Next to the video or folder</label>
+          <label><input type="radio" name="output" value="folder" /> In <input name="outDir" readonly placeholder="choose a folder" /></label>
+          <button type="button" id="choose-out">Choose…</button>
+        </fieldset>
+        <details>
+          <summary>Advanced</summary>
+          <label>Frames from a video <input type="number" name="frames" min="10" placeholder="from Detail" /></label>
+          <label>Max image size (px) <input type="number" name="maxSize" min="200" placeholder="1600" /></label>
+          <label>Training steps <input type="number" name="steps" min="100" placeholder="from Detail" /></label>
+          <label>Preview every (steps) <input type="number" name="exportEvery" min="100" placeholder="5000" /></label>
+          <label>Single camera
+            <select name="singleCamera">
+              <option value="">Auto (video: yes, photos: no)</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </label>
+          <label><input type="checkbox" name="incrementalMapper" /> Incremental mapper (slower, sometimes more robust)</label>
+          <label><input type="checkbox" name="keepIntermediates" checked /> Keep intermediate files (faster re-runs)</label>
+        </details>
+        <p><button type="button" id="close-settings">Done</button></p>
+      </form>
+    </section>
+
+    <div id="capture-host"></div>
   </body>
 </html>

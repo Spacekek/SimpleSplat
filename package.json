@@ -9,7 +9,12 @@
     "tools": "python3 scripts/bundle_tools.py"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.12.4"
+    "@playcanvas/supersplat-viewer": "^1.37.0",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@tauri-apps/plugin-notification": "^2.7.0",
+    "@tauri-apps/plugin-opener": "^2.7.2",
+    "playcanvas": "^2.23.2"
   },
   "devDependencies": {
     "typescript": "~6.0.3",
