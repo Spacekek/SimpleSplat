@@ -13,5 +13,10 @@
         "trafficLightPosition": { "x": 18, "y": 16 }
       }
     ]
+  },
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
