@@ -1,6 +1,6 @@
 # SimpleSplat plan
 
-A desktop app that turns a phone video or a folder of photos into a Gaussian splat with one button, and shows it in a 3D viewer. Runs on macOS and Linux first, Windows later. Uses the GPU on any vendor (Apple, NVIDIA, AMD, Intel); no CUDA required.
+A desktop app that turns a phone video or a folder of photos into a Gaussian splat with one button, and shows it in a 3D viewer. Runs on macOS, Linux and Windows. Uses the GPU on any vendor (Apple, NVIDIA, AMD, Intel); no CUDA required.
 
 ## Pipeline
 
@@ -48,10 +48,10 @@ Brush loads any `.ply` in the folder it trains on as starting splats, so trainin
 | Tool | Source | Why |
 |---|---|---|
 | ffmpeg | conda-forge, pinned `ffmpeg=*=lgpl*` (9.0.2) | Reads iPhone tiled HEIC (needs ffmpeg 8.1+); same bundle as COLMAP. Unpinned, the solver picks the GPL build |
-| COLMAP | conda-forge, pinned `colmap=4.2.1=cpu*` | Current version on every OS, no compiling. The exact version pin is required: unpinned, the solver picked 3.11.1. The `cpu*` pin avoids the CUDA build on NVIDIA hosts |
+| COLMAP | conda-forge, pinned `colmap=4.2.1=cpu*` | Current version on every OS, no compiling. The exact version pin is required: unpinned, the solver picked 3.11.1. The `cpu*` pin avoids the CUDA build on NVIDIA hosts. On Linux and Windows even the `cpu` builds require the CUDA build of faiss (about 670 MB with cuBLAS); COLMAP only uses faiss for image retrieval, so the bundle step swaps in the CPU build of the same faiss version. `libblas=*=*openblas` keeps MKL, which loads most of itself at runtime, out of the Windows bundle |
 | Brush | cargo build of a pinned git commit, run as a sidecar | Current code (the last release is from Sep 2025); a crash or GPU out-of-memory does not take the app down |
 
-ffmpeg and COLMAP are installed with `micromamba` into one folder that ships as a Tauri resource. The bundle step keeps only `bin/{colmap,ffmpeg,ffprobe}` and the dylibs they link (found by walking `otool -L` / `ldd` from those three), and collects every package's license into `THIRD_PARTY_LICENSES/`. The app looks for tools in its bundled folder first, then on `PATH`.
+ffmpeg and COLMAP are installed with `micromamba` into one folder that ships as a Tauri resource. The bundle step keeps only `bin/{colmap,ffmpeg,ffprobe}` and the libraries they link (found by walking `otool -L` / `ldd` / the PE import table from those three; on Windows the DLLs sit in `bin/` beside the programs), and collects every package's license into `THIRD_PARTY_LICENSES/`. The app looks for tools in its bundled folder first, then on `PATH`.
 
 Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the width of the total step count (`export_5000.ply` for a 5k run, `export_05000.ply` for 30k), so the app picks the newest export instead of guessing names. When piped, its progress bar is hidden; `RUST_LOG=info` gives a `Refine iter N, X splats.` line every 200 steps up to 95% of training and `Compute backend: …` at start. GPU kernel tuning is cached in `~/.cache/cubecl`, so the first run is slower.
 
@@ -59,7 +59,7 @@ Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the
 - **Tauri** with **Vite + vanilla TypeScript** (no framework, no CSS library: about 300 lines of TS and hand-written CSS are less than Tailwind or a UI kit would add). Four views: Home, Progress, Viewer, Settings.
 - **Look:** GNOME / libadwaita patterns (header bars, status page, boxed-list preferences, pill and OSD buttons, Adwaita palette and fonts) on every platform. The header bars are the title bar: on macOS the window buttons float over them (`tauri.macos.conf.json`, overlay title bar); on Linux there is no system title bar (`tauri.linux.conf.json`), so each bar has GNOME's close button, drags the window and maximises on double-click, and tao resizes from the window edges.
 - **Viewer:** SuperSplat viewer (`@playcanvas/supersplat-viewer`, MIT): polished orbit/fly/touch controls, `frameScene()`, WebGPU with WebGL fallback. It has no content swap, so each preview export recreates the viewer (`destroy()` then `createViewer()`). It has no model rotation either, so orientation is fixed in the data by `model_orientation_aligner` before training. It applies the usual 180° Z flip to PLY data, so aligned scenes (up = -Y) show upright. Nice touch: set the initial camera to the first frame's pose (COLMAP camera center and view direction with x and y negated), so the viewer opens on the view the user filmed first.
-- **CLI:** the same binary, arguments parsed with clap. `simplesplat <video|folder> [--detail low|medium|high] [--out DIR]` runs the pipeline headless when given an input, prints one progress line per step, and exits non-zero with the same plain-language message the UI shows. No window, no second binary to package. Advanced settings become flags only when someone needs them. (Windows later: a GUI-subsystem binary has no console, so it will need `AttachConsole` or a separate small binary.)
+- **CLI:** the same binary, arguments parsed with clap. `simplesplat <video|folder> [--detail low|medium|high] [--out DIR]` runs the pipeline headless when given an input, prints one progress line per step, and exits non-zero with the same plain-language message the UI shows. No window, no second binary to package. Advanced settings become flags only when someone needs them. On Windows the release binary is a GUI program: the CLI attaches to the terminal's console, but the shell doesn't wait for it. A console-subsystem copy named `simplesplat.com` beside the `.exe` would fix that, since shells try `.com` first.
 - **Update notice:** at startup, compare the app version with GitHub's latest release tag and show a download link if newer. No in-place updater.
 
 ### Nix
@@ -68,15 +68,15 @@ Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the
 - Release builds for macOS, `.deb` and `.rpm` do not use Nix-built binaries, and run outside `nix develop` (plain rustup, Node, micromamba): anything compiled inside the shell can link against `/nix/store` paths.
 
 ### Packaging
-- **macOS (arm64):** ad-hoc signed for now. Before a public release: Developer ID, sign every bundled dylib with hardened runtime, notarize.
-- **Linux (x64):** `.deb` and `.rpm` (system WebKitGTK, so WebGL uses the real drivers), plus the Nix package. Flatpak later (NVIDIA works through the matching GL extension).
+- **macOS (arm64):** `.dmg`, ad-hoc signed for now. A symlink to the binary works (Tauri feature `process-relaunch-dangerous-allow-symlink-macos`), so a Homebrew cask can expose the CLI with `binary`. Before a public release: Developer ID, sign every bundled dylib with hardened runtime, notarize.
+- **Linux (x64):** `.deb` and `.rpm` (system WebKitGTK, so WebGL uses the real drivers; no AppImage, which bundles its own), depending on the Vulkan loader for Brush, plus the Nix package. The CLI lands in `/usr/bin`. Flatpak later (NVIDIA works through the matching GL extension).
 - **Size budget:** about 500 MB compressed installer. Measured on macOS: trimmed tools 305 MB (68 MB xz), Brush 102 MB stripped (39 MB xz), so about 110 MB compressed in total. No custom COLMAP build needed.
-- **Windows:** later. conda-forge has `win-64` builds of both tools, Brush builds with cargo, WebView2 handles WebGL.
+- **Windows (x64):** NSIS installer, unsigned for now (SmartScreen warns). conda-forge `win-64` builds of both tools (trimmed: 236 MB, 146 files), Brush builds with cargo, WebView2 handles WebGL. Tools run without console windows (`CREATE_NO_WINDOW`), and `SetThreadExecutionState` keeps the machine awake. The installer doesn't put the CLI on `PATH`.
 
 ### Quality
 - Rust unit tests for pure logic: frame sampling math, error text to message mapping, step skipping.
 - A tiny dataset in the repo (about 20 photos of one object, 400 px).
-- CI on every push: the CLI runs the full pipeline on Linux with Brush at about 100 steps on Mesa lavapipe (software Vulkan); on macOS, ffmpeg and COLMAP run from the moved conda bundle.
+- CI on every push (`.github/workflows/build.yml`): builds the macOS, Linux and Windows installers and runs the unit tests. Still to add: the CLI runs the full pipeline on Linux with Brush at about 100 steps on Mesa lavapipe (software Vulkan); on macOS, ffmpeg and COLMAP run from the moved conda bundle.
 - Before each release: real phone videos on real hardware (Apple Silicon, NVIDIA Linux, AMD or Intel Linux).
 
 ### License
@@ -112,7 +112,7 @@ Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a 
 2. ~~Scaffold~~ done on macOS: `flake.nix` (Linux shell evaluates but has not run on Linux yet), Tauri vanilla-ts app, `scripts/bundle_tools.py` (Linux `ldd` path untested).
 3. ~~Pipeline + CLI~~ done: `src-tauri/src/pipeline.rs` driven by `simplesplat <input> [--detail] [--out]` (same binary; no arguments starts the app). On the M5, Low takes 3 minutes for the 20 s test video; a re-run skips every stage.
 4. Mac app end to end: all four views on top of the same pipeline, notifications, update notice.
-5. CI: test dataset, unit tests, smoke runs, release builds.
+5. CI: ~~release builds and unit tests on macOS, Linux and Windows~~; still to do: test dataset, smoke runs.
 6. Linux `.deb` and `.rpm`, tested on NVIDIA and on AMD or Intel.
 7. Nix package for NixOS.
-8. Later: notarization, Flatpak, Windows, sharpest-frame selection, multiple videos per scene, a nice progress bar in both CLI and GUI (overall and per-step percentage with ETA; in the CLI only when stdout is a terminal, plain lines otherwise). Version 1 shows which step is running plus the log. Progress sources: ffmpeg's `-progress pipe:1` option, and (seen in the spike) COLMAP's per-image and per-block log lines and Brush's `Refine iter N` log line every 200 steps (its own bar is hidden when piped). Step weights for the overall ETA come from measured timings.
+8. Later: notarization, Windows code signing, Flatpak, sharpest-frame selection, multiple videos per scene, a nice progress bar in both CLI and GUI (overall and per-step percentage with ETA; in the CLI only when stdout is a terminal, plain lines otherwise). Version 1 shows which step is running plus the log. Progress sources: ffmpeg's `-progress pipe:1` option, and (seen in the spike) COLMAP's per-image and per-block log lines and Brush's `Refine iter N` log line every 200 steps (its own bar is hidden when piped). Step weights for the overall ETA come from measured timings.

@@ -539,12 +539,18 @@ impl Job<'_> {
 
     /// A bundled tool if present, otherwise the bare name for a PATH lookup.
     fn cmd(&self, name: &str) -> Command {
+        let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
         let bundled = self
             .tools
             .as_ref()
-            .map(|dir| dir.join(name))
+            .map(|dir| dir.join(file))
             .filter(|path| path.exists());
-        Command::new(bundled.unwrap_or_else(|| name.into()))
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut cmd = Command::new(bundled.unwrap_or_else(|| name.into()));
+        // On Windows each console tool started by the app would open its own console window.
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
+        cmd
     }
 
     /// Runs a command with stdout and stderr appended to log.txt; stdout lines also go to `on_line`.
@@ -789,9 +795,33 @@ impl Drop for Awake {
             let _ = child.kill();
             let _ = child.wait();
         }
+        #[cfg(windows)]
+        unsafe {
+            SetThreadExecutionState(ES_CONTINUOUS);
+        }
     }
 }
 
+#[cfg(windows)]
+const ES_CONTINUOUS: u32 = 0x8000_0000;
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetThreadExecutionState(flags: u32) -> u32;
+}
+
+/// Held by this thread until Awake resets it.
+#[cfg(windows)]
+fn keep_awake() -> Awake {
+    const ES_SYSTEM_REQUIRED: u32 = 0x1;
+    unsafe {
+        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+    }
+    Awake(None)
+}
+
+#[cfg(not(windows))]
 fn keep_awake() -> Awake {
     let pid = std::process::id().to_string();
     let mut cmd = if cfg!(target_os = "macos") {

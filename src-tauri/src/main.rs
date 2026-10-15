@@ -156,6 +156,20 @@ fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
     }
 }
 
+/// The Windows release build is a GUI program, so the CLI borrows the terminal's console to print.
+// ponytail: the shell doesn't wait for a GUI program (the prompt returns, the exit code is lost);
+// ship a console-subsystem copy as simplesplat.com beside the .exe if Windows CLI use grows
+#[cfg(windows)]
+fn attach_console() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process: u32) -> i32;
+    }
+    unsafe {
+        AttachConsole(u32::MAX); // ATTACH_PARENT_PROCESS
+    }
+}
+
 fn main() -> ExitCode {
     let context = tauri::generate_context!();
     let tools =
@@ -168,6 +182,8 @@ fn main() -> ExitCode {
         .filter(|arg| !arg.starts_with("-psn_"))
         .collect();
     if args.len() > 1 {
+        #[cfg(windows)]
+        attach_console();
         return cli(Cli::parse_from(args), tools);
     }
     tauri::Builder::default()

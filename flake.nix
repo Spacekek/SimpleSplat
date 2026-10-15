@@ -19,8 +19,7 @@
               cargo
               rustfmt
               clippy
-              cargo-tauri
-              nodejs
+              nodejs # the Tauri CLI comes from npm (@tauri-apps/cli)
               micromamba
               python3
               pkg-config

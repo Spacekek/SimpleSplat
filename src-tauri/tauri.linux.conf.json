@@ -11,5 +11,23 @@
         "decorations": false
       }
     ]
+  },
+  "bundle": {
+    "targets": [
+      "deb",
+      "rpm"
+    ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libvulkan1"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "vulkan-loader"
+        ]
+      }
+    }
   }
 }
