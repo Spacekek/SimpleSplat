@@ -9,20 +9,22 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const STAGES: usize = 3;
+pub const STOPPED: &str = "Stopped.";
 const PHOTO_EXTS: [&str; 8] = ["jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff"];
 const UNREADABLE: &str = "Couldn't read the input. Use a common video format (mp4, mov) or a folder of photos (jpg, png, heic).";
-const STOPPED: &str = "Stopped.";
 
 pub struct Settings {
+    /// Frames taken from a video, or the most photos used from a folder.
     pub frames: u32,
     pub steps: u32,
     pub max_size: u32,
-    pub export_every: u32,
+    /// Steps between exports (previews). None: a fifth of the steps.
+    pub export_every: Option<u32>,
     /// None: one camera for video, one per photo otherwise.
     pub single_camera: Option<bool>,
     pub incremental_mapper: bool,
@@ -41,7 +43,7 @@ impl Settings {
             frames,
             steps,
             max_size: 1600,
-            export_every: 5_000,
+            export_every: None,
             single_camera: None,
             incremental_mapper: false,
             keep_intermediates: true,
@@ -81,29 +83,21 @@ pub enum Event {
 #[derive(Default)]
 pub struct Control {
     stopped: AtomicBool,
-    child: Mutex<Option<Arc<Mutex<Child>>>>,
+    child: Mutex<Option<Child>>,
 }
 
 impl Control {
     /// Kills the running tool. During training the latest preview becomes the result.
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
-        if let Some(child) = &*self.child.lock().unwrap() {
-            let _ = child.lock().unwrap().kill();
+        if let Some(child) = self.child.lock().unwrap().as_mut() {
+            let _ = child.kill();
         }
     }
 
     fn stopped(&self) -> bool {
         self.stopped.load(Ordering::SeqCst)
     }
-}
-
-/// A bundled tool if present, otherwise the bare name for a PATH lookup.
-pub fn tool(tools: Option<&Path>, name: &str) -> PathBuf {
-    tools
-        .map(|dir| dir.join(name))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| name.into())
 }
 
 /// Runs the whole pipeline and returns the path of the finished scene. Errors are plain language.
@@ -158,10 +152,20 @@ impl Job<'_> {
     ) -> Result<PathBuf, String> {
         let video = input.is_file();
         let single_camera = s.single_camera.unwrap_or(video);
+        let files = if video {
+            vec![input.to_path_buf()]
+        } else {
+            photos(input, s.frames)?
+        };
         let frames_key = format!(
-            "input={} frames={} max_size={}",
+            "input={} {} frames={} max_size={}",
             input.display(),
-            s.frames,
+            fingerprint(&files),
+            if video {
+                s.frames as usize
+            } else {
+                files.len()
+            },
             s.max_size
         );
         let label = if video {
@@ -170,7 +174,7 @@ impl Job<'_> {
             "Preparing photos"
         };
         self.stage(1, label, "images", &frames_key, emit, |job, dir, _| {
-            job.frames(input, video, s, dir)
+            job.frames(&files, video, s, dir)
         })?;
 
         let colmap_key = format!(
@@ -179,7 +183,7 @@ impl Job<'_> {
         );
         self.stage(
             2,
-            "Finding camera positions (COLMAP)",
+            "Finding camera positions",
             "sparse",
             &colmap_key,
             emit,
@@ -189,7 +193,7 @@ impl Job<'_> {
         let train_key = format!("{colmap_key} | steps={}", s.steps);
         self.stage(
             3,
-            "Training the splat (Brush)",
+            "Training the splat",
             "exports",
             &train_key,
             emit,
@@ -206,7 +210,6 @@ impl Job<'_> {
                 let _ = fs::remove_dir_all(self.project.join(dir));
                 let _ = fs::remove_file(self.project.join(format!(".{dir}.stamp")));
             }
-            let _ = fs::remove_file(self.project.join("database.db"));
         }
         Ok(self.project.join("scene.ply"))
     }
@@ -250,9 +253,10 @@ impl Job<'_> {
         Ok(())
     }
 
+    /// `files` is the video, or the photos to use.
     fn frames(
         &mut self,
-        input: &Path,
+        files: &[PathBuf],
         video: bool,
         s: &Settings,
         dir: &Path,
@@ -263,6 +267,7 @@ impl Job<'_> {
         );
         let unreadable = |_| UNREADABLE.to_string();
         if video {
+            let input = &files[0];
             let duration = self.capture(
                 self.cmd("ffprobe")
                     .args([
@@ -283,30 +288,21 @@ impl Job<'_> {
             ffmpeg
                 .args(["-hide_banner", "-loglevel", "error", "-i"])
                 .arg(input);
+            // Never above the source rate: the fps filter would repeat frames to get there.
             ffmpeg
                 .args([
                     "-vf",
-                    &format!("fps={},{scale}", s.frames as f64 / duration),
+                    &format!(
+                        "fps='min(source_fps,{})',{scale}",
+                        s.frames as f64 / duration
+                    ),
                     "-q:v",
                     "2",
                 ])
                 .arg(dir.join("%04d.jpg"));
             return self.run(ffmpeg, &mut |_| {}).map_err(unreadable);
         }
-        let mut photos: Vec<PathBuf> = fs::read_dir(input)
-            .map_err(|e| format!("Can't read {}: {e}", input.display()))?
-            .filter_map(|entry| Some(entry.ok()?.path()))
-            .filter(|path| {
-                path.extension().is_some_and(|ext| {
-                    PHOTO_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_str())
-                })
-            })
-            .collect();
-        photos.sort();
-        if photos.is_empty() {
-            return Err("No photos found in this folder (jpg, png, heic, webp, tif).".into());
-        }
-        for (i, photo) in photos.iter().enumerate() {
+        for (i, photo) in files.iter().enumerate() {
             // Tiled HEIC is stitched by an internal filter graph that can't be combined with -vf.
             let heic = photo.extension().is_some_and(|ext| {
                 ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif")
@@ -348,6 +344,7 @@ impl Job<'_> {
         );
         let _ = fs::remove_file(&database);
         let _ = fs::remove_dir_all(&mapped);
+        let _ = fs::remove_file(self.project.join("view.json")); // belongs to the old model
         let mut features = self.cmd("colmap");
         features
             .args(["feature_extractor", "--database_path"])
@@ -429,7 +426,9 @@ impl Job<'_> {
             }
         }
         aligned?;
+        // Nothing reads these again: a re-run of this stage starts over, and Brush needs only the model.
         let _ = fs::remove_dir_all(&mapped);
+        let _ = fs::remove_file(&database);
 
         let total = fs::read_dir(&images).map(|d| d.count()).unwrap_or(0);
         let analysis = self.capture(
@@ -496,7 +495,7 @@ impl Job<'_> {
             "--total-train-iters",
             &s.steps.to_string(),
             "--export-every",
-            &s.export_every.to_string(),
+            &s.export_every.unwrap_or(s.steps / 5).to_string(),
         ]);
         brush
             .arg("--export-path")
@@ -517,19 +516,35 @@ impl Job<'_> {
                 emit(Event::Preview { path });
             }
         });
-        if result.is_err() && !self.control.stopped() {
+        let stopped = self.control.stopped();
+        if result.is_err() && !stopped {
             return Err(brush_hint(&self.log_tail()).into());
         }
-        let newest = newest_ply(exports, Duration::ZERO).ok_or(if self.control.stopped() {
+        // Brush doesn't write exports atomically, so a stopped run keeps the last one that settled.
+        let newest = (if stopped {
+            previewed
+        } else {
+            newest_ply(exports, Duration::ZERO)
+        })
+        .ok_or(if stopped {
             STOPPED
         } else {
             "Training finished without writing a scene."
         })?;
-        fs::rename(newest, &scene).map_err(|e| e.to_string())
+        fs::rename(newest, &scene).map_err(|e| e.to_string())?;
+        // The other exports were only previews.
+        let _ = fs::remove_dir_all(exports);
+        Ok(())
     }
 
+    /// A bundled tool if present, otherwise the bare name for a PATH lookup.
     fn cmd(&self, name: &str) -> Command {
-        Command::new(tool(self.tools.as_deref(), name))
+        let bundled = self
+            .tools
+            .as_ref()
+            .map(|dir| dir.join(name))
+            .filter(|path| path.exists());
+        Command::new(bundled.unwrap_or_else(|| name.into()))
     }
 
     /// Runs a command with stdout and stderr appended to log.txt; stdout lines also go to `on_line`.
@@ -545,10 +560,10 @@ impl Job<'_> {
             .spawn()
             .map_err(|e| format!("Can't start {:?}: {e}", cmd.get_program()))?;
         let stdout = child.stdout.take().expect("piped stdout");
-        let child = Arc::new(Mutex::new(child));
-        *self.control.child.lock().unwrap() = Some(child.clone());
+        *self.control.child.lock().unwrap() = Some(child);
+        // A stop that came before the child was registered had nothing to kill.
         if self.control.stopped() {
-            let _ = child.lock().unwrap().kill();
+            self.control.stop();
         }
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let _ = writeln!(self.log, "{line}");
@@ -556,12 +571,15 @@ impl Job<'_> {
         }
         // Poll instead of wait() so Control::stop never blocks on this lock.
         let status = loop {
-            if let Some(status) = child
+            let polled = self
+                .control
+                .child
                 .lock()
                 .unwrap()
-                .try_wait()
-                .map_err(|e| e.to_string())?
-            {
+                .as_mut()
+                .expect("registered above")
+                .try_wait();
+            if let Some(status) = polled.map_err(|e| e.to_string())? {
                 break status;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -587,13 +605,14 @@ impl Job<'_> {
     }
 
     fn log_tail(&mut self) -> String {
-        let mut tail = String::new();
+        let mut tail = Vec::new();
         if let Ok(mut f) = File::open(self.project.join("log.txt")) {
             let len = f.metadata().map(|m| m.len()).unwrap_or(0);
             let _ = f.seek(SeekFrom::Start(len.saturating_sub(8192)));
-            let _ = f.read_to_string(&mut tail);
+            let _ = f.read_to_end(&mut tail);
         }
-        tail
+        // The cut can land inside a multi-byte character.
+        String::from_utf8_lossy(&tail).into_owned()
     }
 }
 
@@ -606,7 +625,13 @@ fn project_dir(input: &Path, out: Option<&Path>) -> Result<PathBuf, String> {
     let preferred = parent.join(&name);
     match fs::create_dir_all(&preferred) {
         Ok(()) => Ok(preferred),
-        Err(e) if out.is_none() && e.kind() == ErrorKind::PermissionDenied => {
+        Err(e)
+            if out.is_none()
+                && matches!(
+                    e.kind(),
+                    ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+                ) =>
+        {
             let fallback = dirs::data_dir()
                 .ok_or("No writable folder for the results.")?
                 .join("com.simplesplat.desktop")
@@ -617,6 +642,43 @@ fn project_dir(input: &Path, out: Option<&Path>) -> Result<PathBuf, String> {
         }
         Err(e) => Err(format!("Can't create {}: {e}", preferred.display())),
     }
+}
+
+/// Up to `max` photos from `folder`, evenly spread over the name order. Exhaustive matching grows
+/// with the square of the count, so this bounds COLMAP's time like the frame count does for video.
+fn photos(folder: &Path, max: u32) -> Result<Vec<PathBuf>, String> {
+    let mut photos: Vec<PathBuf> = fs::read_dir(folder)
+        .map_err(|e| format!("Can't read {}: {e}", folder.display()))?
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| {
+            path.extension().is_some_and(|ext| {
+                PHOTO_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_str())
+            })
+        })
+        .collect();
+    photos.sort();
+    if photos.is_empty() {
+        return Err("No photos found in this folder (jpg, png, heic, webp, tif).".into());
+    }
+    let n = photos.len().min(max as usize);
+    Ok((0..n)
+        .map(|i| photos[i * photos.len() / n].clone())
+        .collect())
+}
+
+/// Total size and newest modification of `files`, so a re-recorded video or a changed photo isn't
+/// mistaken for the input a stage was made from.
+fn fingerprint(files: &[PathBuf]) -> String {
+    let (mut bytes, mut newest) = (0, 0);
+    for meta in files.iter().filter_map(|f| f.metadata().ok()) {
+        bytes += meta.len();
+        let modified = meta
+            .modified()
+            .ok()
+            .map(|t| t.duration_since(SystemTime::UNIX_EPOCH));
+        newest = newest.max(modified.and_then(Result::ok).map_or(0, |d| d.as_secs()));
+    }
+    format!("bytes={bytes} modified={newest}")
 }
 
 /// Newest .ply in `dir` that has not been modified for at least `settled`.
@@ -737,13 +799,16 @@ fn keep_awake() -> Awake {
         c.args(["-i", "-w", &pid]);
         c
     } else {
+        // Like caffeinate -w: ends with this process, even if it dies without dropping Awake.
         let mut c = Command::new("systemd-inhibit");
         c.args([
             "--what=idle:sleep",
             "--who=SimpleSplat",
             "--why=Making a splat",
-            "sleep",
-            "infinity",
+            "tail",
+            &format!("--pid={pid}"),
+            "-f",
+            "/dev/null",
         ]);
         c
     };
@@ -789,6 +854,27 @@ mod tests {
             "stopped job must not start stages"
         );
         fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn photos_are_sorted_and_evenly_thinned() {
+        let folder =
+            std::env::temp_dir().join(format!("simplesplat-photos-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        for name in ["e.jpg", "a.JPG", "c.heic", "b.png", "d.jpg", "notes.txt"] {
+            fs::write(folder.join(name), "").unwrap();
+        }
+        let names = |max| -> Vec<String> {
+            let photos = photos(&folder, max).unwrap();
+            photos
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into())
+                .collect()
+        };
+        assert_eq!(names(10), ["a.JPG", "b.png", "c.heic", "d.jpg", "e.jpg"]);
+        assert_eq!(names(2), ["a.JPG", "c.heic"]);
+        fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

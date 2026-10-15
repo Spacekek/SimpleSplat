@@ -6,13 +6,13 @@ A desktop app that turns a phone video or a folder of photos into a Gaussian spl
 
 ```
 input: one video OR one photo folder (auto-detected)
-  -> ffmpeg       N frames evenly spaced (video) or every photo, long side <= 1600 px, JPEG -> images/
+  -> ffmpeg       N frames evenly spaced (video, never above its frame rate) or at most N photos evenly spread, long side <= 1600 px, JPEG -> images/
                   (tiled HEIC: decode in one call, resize in a second; ffmpeg can't combine them)
   -> colmap       feature_extractor --ImageReader.single_camera 1 (video) --FeatureExtraction.use_gpu 0
   -> colmap       sequential_matcher (video) | exhaustive_matcher (photos)
   -> colmap       global_mapper                                        -> sparse/0
-  -> colmap       model_orientation_aligner --method IMAGE-ORIENTATION  -> up = -Y
-  -> brush        train, export every 5k steps                         -> exports/*.ply
+  -> colmap       model_orientation_aligner MANHATTAN-WORLD, falling back to IMAGE-ORIENTATION  -> up = -Y
+  -> brush        train, export 5 times                                -> exports/*.ply
   -> viewer       SuperSplat viewer (PlayCanvas), upright with no extra rotation
 ```
 
@@ -20,15 +20,14 @@ Each step is a separate process with its own progress line in the UI and its own
 
 ### Project folder
 
-Written next to the input as `<name>_splat/` (falls back to the app data folder if that location is not writable). Everything is kept. Each stage writes a hidden `.<folder>.stamp` with the settings that produced it, including the previous stage's stamp: a re-run skips stages whose stamp matches, and changing a setting re-runs that stage and everything after it. Changing training steps only re-trains; changing Detail also changes the frame count, so it redoes everything.
+Written next to the input as `<name>_splat/` (falls back to the app data folder if that location is not writable). Everything is kept. Each stage writes a hidden `.<folder>.stamp` with the settings that produced it (and the input's size and modification time), including the previous stage's stamp: a re-run skips stages whose stamp matches, and changing a setting re-runs that stage and everything after it. Changing training steps only re-trains; changing Detail also changes the frame count, so it redoes everything.
 
 ```
 <name>_splat/
   scene.ply      the result
   images/        normalized frames/photos
-  database.db    COLMAP features and matches
   sparse/0/      COLMAP model, aligned upright
-  exports/       periodic Brush exports (the last one becomes scene.ply)
+  exports/       Brush exports while training (the last one becomes scene.ply, the rest are deleted)
   log.txt        output of every tool
   .*.stamp       what produced each stage
 ```
@@ -41,8 +40,8 @@ Brush loads any `.ply` in the folder it trains on as starting splats, so trainin
 - **Main screen is one button.** Drop an input, press Go.
 - **Settings screen.** Simple: Detail (Low/Medium/High) and output location. Advanced, collapsed at the bottom: frame count, max image size, training steps, preview export interval, single camera, mapper (global/incremental), keep intermediates, open log folder.
 - **Detail presets:** frames 100/150/300, training steps 5k/15k/30k. On an M5 with 150 frames that is about 2.5/15/38 minutes of training plus about 1 minute of COLMAP.
-- **Preview during training:** a still image, not a live viewer. An idle SuperSplat viewer keeps rendering at 60 fps and slowed training by 16% in the spike. For each export, load it, `captureFrame()`, `destroy()` the viewer and show the image (cost: a few seconds per 5k steps). An "Explore" button opens the live viewer and says training is slower while it is open. Stop kills Brush and keeps the latest export.
-- **One job at a time.** Cancel kills the current step (finished steps stay). Quitting kills running tools. The machine is kept awake during a job (`caffeinate` on macOS, `systemd-inhibit` on Linux). A system notification fires on finish or failure.
+- **Preview during training:** a still image, not a live viewer. An idle SuperSplat viewer keeps rendering at 60 fps and slowed training by 16% in the spike. For each export, load it, `captureFrame()`, `destroy()` the viewer and show the image (cost: a few seconds per preview). An "Explore" button opens the live viewer and says training is slower while it is open. Stop kills Brush and keeps the latest complete export.
+- **One job at a time.** Cancel kills the current step (finished steps stay). Closing the window asks first, then kills running tools (Cmd+Q on macOS quits without asking). The machine is kept awake during a job (`caffeinate` on macOS, `systemd-inhibit` on Linux). A system notification fires on finish or failure when the window isn't focused (not on Stop).
 - **GPU failures** are translated, not prevented: "no supported GPU" (needs Metal or Vulkan) and "out of memory" (lower Detail). No startup check unless Brush offers a cheap one.
 
 ### Tools and where they come from
@@ -54,13 +53,13 @@ Brush loads any `.ply` in the folder it trains on as starting splats, so trainin
 
 ffmpeg and COLMAP are installed with `micromamba` into one folder that ships as a Tauri resource. The bundle step keeps only `bin/{colmap,ffmpeg,ffprobe}` and the dylibs they link (found by walking `otool -L` / `ldd` from those three), and collects every package's license into `THIRD_PARTY_LICENSES/`. The app looks for tools in its bundled folder first, then on `PATH`.
 
-Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the width of the total step count (`export_5000.ply` for a 5k run, `export_05000.ply` for 30k), so the app picks the newest export instead of guessing names. When piped, its progress bar is hidden; `RUST_LOG=info` gives a `Refine iter N, X splats.` line every 200 steps and `Compute backend: …` at start. GPU kernel tuning is cached in `~/.cache/cubecl`, so the first run is slower.
+Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the width of the total step count (`export_5000.ply` for a 5k run, `export_05000.ply` for 30k), so the app picks the newest export instead of guessing names. When piped, its progress bar is hidden; `RUST_LOG=info` gives a `Refine iter N, X splats.` line every 200 steps up to 95% of training and `Compute backend: …` at start. GPU kernel tuning is cached in `~/.cache/cubecl`, so the first run is slower.
 
 ### App
 - **Tauri** with **Vite + vanilla TypeScript** (no framework, no CSS library: about 300 lines of TS and hand-written CSS are less than Tailwind or a UI kit would add). Four views: Home, Progress, Viewer, Settings.
 - **Look:** GNOME / libadwaita patterns (header bars, status page, boxed-list preferences, pill and OSD buttons, Adwaita palette and fonts) on every platform. The header bars are the title bar: on macOS the window buttons float over them (`tauri.macos.conf.json`, overlay title bar); on Linux there is no system title bar (`tauri.linux.conf.json`), so each bar has GNOME's close button, drags the window and maximises on double-click, and tao resizes from the window edges.
 - **Viewer:** SuperSplat viewer (`@playcanvas/supersplat-viewer`, MIT): polished orbit/fly/touch controls, `frameScene()`, WebGPU with WebGL fallback. It has no content swap, so each preview export recreates the viewer (`destroy()` then `createViewer()`). It has no model rotation either, so orientation is fixed in the data by `model_orientation_aligner` before training. It applies the usual 180° Z flip to PLY data, so aligned scenes (up = -Y) show upright. Nice touch: set the initial camera to the first frame's pose (COLMAP camera center and view direction with x and y negated), so the viewer opens on the view the user filmed first.
-- **CLI:** the same binary. `simplesplat <video|folder> [--detail low|medium|high] [--out DIR]` runs the pipeline headless when given an input, prints one progress line per step, and exits non-zero with the same plain-language message the UI shows. No window, no second binary to package. Advanced settings become flags only when someone needs them. (Windows later: a GUI-subsystem binary has no console, so it will need `AttachConsole` or a separate small binary.)
+- **CLI:** the same binary, arguments parsed with clap. `simplesplat <video|folder> [--detail low|medium|high] [--out DIR]` runs the pipeline headless when given an input, prints one progress line per step, and exits non-zero with the same plain-language message the UI shows. No window, no second binary to package. Advanced settings become flags only when someone needs them. (Windows later: a GUI-subsystem binary has no console, so it will need `AttachConsole` or a separate small binary.)
 - **Update notice:** at startup, compare the app version with GitHub's latest release tag and show a download link if newer. No in-place updater.
 
 ### Nix

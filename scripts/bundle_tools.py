@@ -24,7 +24,8 @@ BRUSH_REV = "1388f74c6fe0236f68ee4915564bf00e9d2e3747"
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "src-tauri" / "tools"
 CACHE = ROOT / ".cache"
-STAMP = json.dumps([CONDA_SPECS, BRUSH_REV, sys.platform, platform.machine()])
+# Any change to this script (pins included) rebuilds the bundle; the slow parts stay cached in .cache.
+STAMP = json.dumps([hashlib.sha1(Path(__file__).read_bytes()).hexdigest(), sys.platform, platform.machine()])
 
 
 def run(*cmd, env=None):

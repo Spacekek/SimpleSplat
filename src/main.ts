@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { createViewer } from "@playcanvas/supersplat-viewer/viewer";
 import { defaultSettings } from "@playcanvas/supersplat-viewer/settings";
@@ -114,33 +113,45 @@ async function makeViewer(container: HTMLElement, ply: string, viewDir: string, 
   return viewer;
 }
 
+// A viewer that finishes loading after it was closed or replaced (generation moved on) is discarded.
 let mainViewer: Viewer | null = null;
+let viewerGen = 0;
 let scenePath = "";
-async function openViewer(ply: string, viewDir: string) {
+function closeViewer() {
+  viewerGen++;
   mainViewer?.destroy();
+  mainViewer = null;
+}
+async function openViewer(ply: string, viewDir: string) {
+  closeViewer();
+  const gen = viewerGen;
   scenePath = ply;
   show("viewer");
-  mainViewer = await makeViewer($("viewer-host"), ply, viewDir, true);
+  const viewer = await makeViewer($("viewer-host"), ply, viewDir, true);
+  if (gen === viewerGen) mainViewer = viewer;
+  else viewer.destroy();
 }
 $("reveal").onclick = () => revealItemInDir(scenePath);
 $("new").onclick = () => {
-  mainViewer?.destroy();
-  mainViewer = null;
+  closeViewer();
   show("home");
 };
 
-// Progress: one row per pipeline stage, filled in as events arrive.
-const PENDING = ["Preparing images", "Finding camera positions", "Training the splat"];
+// Progress: one row per pipeline stage (with the tool behind it), filled in as events arrive.
+const STAGES = [
+  ["Preparing images", "ffmpeg"],
+  ["Finding camera positions", "COLMAP"],
+  ["Training the splat", "Brush"],
+];
 const row = (n: number) => $("stages").querySelector<HTMLElement>(`li[data-n="${n}"]`);
 function renderStages() {
   $("stages").replaceChildren(
-    ...PENDING.map((name, i) => {
+    ...STAGES.map(([name, tool], i) => {
       const li = document.createElement("li");
       li.dataset.n = String(i + 1);
       li.className = "row";
       li.dataset.state = "pending";
-      li.innerHTML = `<span class="status"></span><div class="row-text"><div class="title"></div><div class="subtitle"></div><progress hidden></progress></div>`;
-      li.querySelector(".title")!.textContent = name;
+      li.innerHTML = `<span class="status"></span><div class="row-text"><div class="title"><span class="label">${name}</span><span class="tool">${tool}</span></div><div class="subtitle"></div><progress hidden></progress></div>`;
       return li;
     }),
   );
@@ -159,6 +170,14 @@ async function begin(path: string) {
     await invoke("allow_folder", { path });
     return openViewer(path, dirOf(path));
   }
+  closeViewer(); // a live viewer would slow training down
+  // Nothing else checks the advanced fields' limits: the form is never submitted.
+  if (!form.checkValidity()) {
+    form.querySelector("details")!.open = true;
+    show("settings");
+    form.reportValidity();
+    return;
+  }
   projectDir = latestPreview = "";
   renderStages();
   $("project-name").textContent = baseName(path);
@@ -168,7 +187,6 @@ async function begin(path: string) {
   $<HTMLButtonElement>("stop").disabled = false;
   $("stop").textContent = "Stop";
   show("progress");
-  if (!(await isPermissionGranted().catch(() => true))) requestPermission().catch(() => {});
   invoke("start", { request: request(path) }).catch((err) => fail(String(err)));
 }
 
@@ -194,11 +212,7 @@ listen<JobEvent>("job", ({ payload: e }) => {
     case "stage": {
       const li = row(e.n);
       if (!li) break;
-      // "Training the splat (Brush)" -> name plus a small tool tag
-      const [, label, tool] = e.name.match(/^(.*?)(?: \((.+)\))?$/)!;
-      const name = li.querySelector(".title")!;
-      name.textContent = label;
-      if (tool) name.append(Object.assign(document.createElement("span"), { className: "tool", textContent: tool }));
+      li.querySelector(".label")!.textContent = e.name;
       li.dataset.state = e.skipped ? "done" : "running";
       if (e.skipped) addDetail(li, "Already done");
       break;
@@ -222,7 +236,9 @@ listen<JobEvent>("job", ({ payload: e }) => {
       if (!li) break;
       const bar = li.querySelector("progress")!;
       Object.assign(bar, { hidden: false, max: e.total, value: e.iter });
-      li.querySelector(".subtitle")!.textContent = `${e.iter.toLocaleString()} of ${e.total.toLocaleString()} steps`;
+      // Brush logs the step with each refine (every 200 steps) and stops refining at 95%.
+      const finishing = e.iter + 200 > e.total * 0.95;
+      li.querySelector(".subtitle")!.textContent = finishing ? "Finishing…" : `${e.iter.toLocaleString()} of ${e.total.toLocaleString()} steps`;
       break;
     }
     case "preview":
@@ -252,8 +268,10 @@ let capturing: Promise<void> = Promise.resolve();
 function capturePreview(ply: string) {
   capturing = capturing.then(async () => {
     if (ply !== latestPreview) return; // a newer export arrived while we waited
-    const viewer = await makeViewer($("capture-host"), ply, projectDir, false);
+    // Everything inside the try: a rejection would skip every later capture in the chain.
+    let viewer: Viewer | undefined;
     try {
+      viewer = await makeViewer($("capture-host"), ply, projectDir, false);
       const { width, height, data } = await viewer.captureFrame({ width: 800, height: 450 });
       const pixels = Uint8ClampedArray.from(atob(data), (c) => c.charCodeAt(0));
       $<HTMLCanvasElement>("preview-canvas").getContext("2d")!.putImageData(new ImageData(pixels, width, height), 0, 0);
@@ -261,19 +279,24 @@ function capturePreview(ply: string) {
     } catch (err) {
       console.error("preview failed", err);
     } finally {
-      viewer.destroy();
+      viewer?.destroy();
     }
   });
 }
 
+// Like the main viewer: one that loads after Close (or the job's end) is discarded.
+let exploreGen = 0;
 $("explore").onclick = async () => {
-  if (explorer) return closeExplorer();
-  if (!latestPreview) return;
+  if (!$("explore-note").hidden) return closeExplorer(); // open, or still loading
   $("explore").textContent = "Close";
   $("explore-note").hidden = false;
-  explorer = await makeViewer($("explore-host"), latestPreview, projectDir, true);
+  const gen = exploreGen;
+  const viewer = await makeViewer($("explore-host"), latestPreview, projectDir, true);
+  if (gen === exploreGen) explorer = viewer;
+  else viewer.destroy();
 };
 function closeExplorer() {
+  exploreGen++;
   explorer?.destroy();
   explorer = null;
   $("explore-host").replaceChildren();

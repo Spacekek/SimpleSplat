@@ -3,16 +3,30 @@
 
 mod pipeline;
 
+use clap::Parser;
 use pipeline::{Control, Event, Settings};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
-const USAGE: &str =
-    "usage: simplesplat <video | photo folder> [--detail low|medium|high] [--out DIR]";
+/// Turn a video or a folder of photos into a Gaussian splat, without opening a window.
+/// Run with no arguments to open the app instead.
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// A video, or a folder of photos.
+    input: PathBuf,
+    /// More detail looks better and takes longer.
+    #[arg(long, default_value = "medium", value_parser = ["low", "medium", "high"])]
+    detail: String,
+    /// Folder for the results [default: next to the input].
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
+}
 
 struct AppState {
     /// Bundled tools folder (resources/tools/bin), or None to use PATH.
@@ -43,7 +57,7 @@ fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(),
     s.frames = request.frames.unwrap_or(s.frames);
     s.steps = request.steps.unwrap_or(s.steps);
     s.max_size = request.max_size.unwrap_or(s.max_size);
-    s.export_every = request.export_every.unwrap_or(s.export_every);
+    s.export_every = request.export_every;
     s.single_camera = request.single_camera;
     s.incremental_mapper = request.incremental_mapper.unwrap_or(s.incremental_mapper);
     s.keep_intermediates = request.keep_intermediates.unwrap_or(s.keep_intermediates);
@@ -70,11 +84,18 @@ fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(),
             },
         );
         app.state::<AppState>().job.lock().unwrap().take();
-        let (title, body) = match &result {
-            Ok(_) => ("Your splat is ready", "Open SimpleSplat to look around."),
-            Err(err) => ("Making the splat failed", err.lines().next().unwrap_or("")),
-        };
-        let _ = app.notification().builder().title(title).body(body).show();
+        // Only news for someone who isn't looking, and a Stop is never news.
+        let stopped = result.as_ref().is_err_and(|err| err == pipeline::STOPPED);
+        let focused = app
+            .get_webview_window("main")
+            .is_some_and(|w| w.is_focused().unwrap_or(false));
+        if !stopped && !focused {
+            let (title, body) = match &result {
+                Ok(_) => ("Your splat is ready", "Open SimpleSplat to look around."),
+                Err(err) => ("Making the splat failed", err.lines().next().unwrap_or("")),
+            };
+            let _ = app.notification().builder().title(title).body(body).show();
+        }
         let _ = app.emit("job-end", &result);
     });
     Ok(())
@@ -97,25 +118,8 @@ fn allow_folder(app: AppHandle, path: PathBuf) -> Result<(), String> {
 }
 
 /// Headless run: `simplesplat <input> [--detail ...] [--out ...]`.
-fn cli(args: Vec<String>, tools: Option<PathBuf>) -> ExitCode {
-    let (mut input, mut detail, mut out) = (None, "medium".to_string(), None);
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--detail" => detail = args.next().unwrap_or_default(),
-            "--out" => out = args.next().map(PathBuf::from),
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return ExitCode::SUCCESS;
-            }
-            _ if input.is_none() && !arg.starts_with('-') => input = Some(PathBuf::from(arg)),
-            _ => input = None,
-        }
-    }
-    let (Some(input), Some(settings)) = (input, Settings::detail(&detail)) else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    };
+fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
+    let settings = Settings::detail(&args.detail).expect("clap checks the value");
     let mut shown = 0;
     let print = &mut |event: Event| match event {
         Event::Project { path } => println!("Project folder: {}", path.display()),
@@ -134,8 +138,8 @@ fn cli(args: Vec<String>, tools: Option<PathBuf>) -> ExitCode {
     };
     let control = Control::default();
     match pipeline::run(
-        &input,
-        out.as_deref(),
+        &args.input,
+        args.out.as_deref(),
         &settings,
         tools.as_deref(),
         &control,
@@ -159,9 +163,12 @@ fn main() -> ExitCode {
             .ok()
             .map(|dir| dir.join("tools/bin"));
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if !args.is_empty() {
-        return cli(args, tools);
+    // macOS can pass -psn_0_… to the first launch of a downloaded app; it isn't a CLI argument.
+    let args: Vec<String> = std::env::args()
+        .filter(|arg| !arg.starts_with("-psn_"))
+        .collect();
+    if args.len() > 1 {
+        return cli(Cli::parse_from(args), tools);
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -174,13 +181,43 @@ fn main() -> ExitCode {
         .invoke_handler(tauri::generate_handler![start, stop, allow_folder])
         .build(context)
         .expect("error while building tauri application")
-        .run(|app, event| {
-            // Tools are separate processes and would outlive the app.
-            if let RunEvent::Exit = event
-                && let Some(control) = &*app.state::<AppState>().job.lock().unwrap()
-            {
-                control.stop();
+        .run(|app, event| match event {
+            // Closing the window mid-job asks first. (Cmd+Q on macOS goes straight to Exit; catching
+            // it would take a custom app menu.)
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::CloseRequested { api, .. },
+                ..
+            } if app.state::<AppState>().job.lock().unwrap().is_some() => {
+                api.prevent_close();
+                let handle = app.clone();
+                let mut ask = app
+                    .dialog()
+                    .message(
+                        "Finished steps are kept and skipped next time, but training starts over.",
+                    )
+                    .title("Quit While Making a Splat?")
+                    .kind(MessageDialogKind::Warning)
+                    .buttons(MessageDialogButtons::OkCancelCustom(
+                        "Quit".into(),
+                        "Keep Going".into(),
+                    ));
+                if let Some(window) = app.get_webview_window(&label) {
+                    ask = ask.parent(&window);
+                }
+                ask.show(move |quit| {
+                    if quit {
+                        handle.exit(0);
+                    }
+                });
             }
+            // Tools are separate processes and would outlive the app.
+            RunEvent::Exit => {
+                if let Some(control) = &*app.state::<AppState>().job.lock().unwrap() {
+                    control.stop();
+                }
+            }
+            _ => {}
         });
     ExitCode::SUCCESS
 }

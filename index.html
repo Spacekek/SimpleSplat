@@ -40,7 +40,7 @@
         </div>
         <button id="summary" class="btn flat small"></button>
 
-        <div id="error" class="banner error" hidden>
+        <div id="error" class="banner error" role="alert" hidden>
           <div>
             <div class="title">Couldn't Make the Splat</div>
             <div id="error-text" class="subtitle"></div>
@@ -66,7 +66,7 @@
       <div class="content columns">
         <div>
           <h3 class="group-title">Progress</h3>
-          <ol id="stages" class="boxed-list"></ol>
+          <ol id="stages" class="boxed-list" aria-live="polite"></ol>
         </div>
         <div>
           <h3 class="group-title">Preview</h3>
@@ -143,10 +143,10 @@
         <details class="group">
           <summary class="group-title">Advanced</summary>
           <div class="boxed-list">
-            <label class="row"><div class="row-text"><div class="title">Frames From a Video</div></div><input type="number" name="frames" min="10" placeholder="Auto" /></label>
+            <label class="row"><div class="row-text"><div class="title">Images to Use</div><div class="subtitle">Frames from a video, or at most this many photos</div></div><input type="number" name="frames" min="10" placeholder="Auto" /></label>
             <label class="row"><div class="row-text"><div class="title">Max Image Size</div><div class="subtitle">Pixels on the long side</div></div><input type="number" name="maxSize" min="200" placeholder="1600" /></label>
             <label class="row"><div class="row-text"><div class="title">Training Steps</div></div><input type="number" name="steps" min="100" placeholder="Auto" /></label>
-            <label class="row"><div class="row-text"><div class="title">Preview Every</div><div class="subtitle">Training steps between previews</div></div><input type="number" name="exportEvery" min="100" placeholder="5000" /></label>
+            <label class="row"><div class="row-text"><div class="title">Preview Every</div><div class="subtitle">Training steps between previews</div></div><input type="number" name="exportEvery" min="100" placeholder="Auto" /></label>
             <label class="row">
               <div class="row-text"><div class="title">Single Camera</div><div class="subtitle">Auto: yes for video, no for photos</div></div>
               <select name="singleCamera">
