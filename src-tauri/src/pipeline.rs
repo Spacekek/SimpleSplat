@@ -9,12 +9,16 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const STAGES: usize = 3;
 pub const STOPPED: &str = "Stopped.";
+/// Video candidates per frame kept: each kept frame is the sharpest of its group.
+const CANDIDATES: usize = 3;
+/// Seconds per unit of `train_work` on an Apple M5 (the spike's 30k run took 38 minutes).
+const BRUSH_SECS_PER_WORK: f64 = 38.0 * 60.0 / 165_000.0;
 const PHOTO_EXTS: [&str; 8] = ["jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff"];
 const UNREADABLE: &str = "Couldn't read the input. Use a common video format (mp4, mov) or a folder of photos (jpg, png, heic).";
 
@@ -70,9 +74,13 @@ pub enum Event {
     Info {
         text: String,
     },
-    Steps {
-        iter: u32,
-        total: u32,
+    /// `fraction` of stage `n` is done and `overall` of the job; `eta` is seconds left.
+    Progress {
+        n: usize,
+        fraction: f64,
+        overall: f64,
+        eta: u64,
+        what: String,
     },
     Preview {
         path: PathBuf,
@@ -97,6 +105,93 @@ impl Control {
 
     fn stopped(&self) -> bool {
         self.stopped.load(Ordering::SeqCst)
+    }
+}
+
+/// Sends events, and turns each stage's fraction done into overall progress and time left.
+///
+/// Each stage has an estimate in seconds from runs on an Apple M5. The speed seen so far scales what
+/// is left: the running stage's own once it is 5% along, before that the finished stages' (when they
+/// took long enough to tell), else the estimates stand as they are.
+struct Report<'a> {
+    emit: &'a mut dyn FnMut(Event),
+    estimates: [f64; STAGES],
+    runs: [bool; STAGES],
+    stage: usize,
+    started: Instant,
+    finished: (f64, f64), // seconds taken and estimated by the stages run so far
+    sent: Option<Instant>,
+}
+
+impl<'a> Report<'a> {
+    fn new(emit: &'a mut dyn FnMut(Event), estimates: [f64; STAGES]) -> Self {
+        Self {
+            emit,
+            estimates,
+            runs: [true; STAGES],
+            stage: 0,
+            started: Instant::now(),
+            finished: (0.0, 0.0),
+            sent: None,
+        }
+    }
+
+    fn event(&mut self, event: Event) {
+        (self.emit)(event);
+    }
+
+    fn start(&mut self, n: usize, name: &str, skipped: bool) {
+        (self.stage, self.started, self.sent) = (n - 1, Instant::now(), None);
+        self.runs[n - 1] = !skipped;
+        self.event(Event::Stage {
+            n,
+            name: name.into(),
+            skipped,
+        });
+        if !skipped {
+            self.progress(0.0, "");
+        }
+    }
+
+    fn done(&mut self) {
+        let secs = self.started.elapsed().as_secs_f64();
+        self.finished.0 += secs;
+        self.finished.1 += self.estimates[self.stage];
+        self.event(Event::StageDone {
+            n: self.stage + 1,
+            secs: secs as u64,
+        });
+    }
+
+    /// `fraction` of the running stage is done, and it is busy with `what`.
+    fn progress(&mut self, fraction: f64, what: &str) {
+        if self
+            .sent
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(250))
+        {
+            return;
+        }
+        self.sent = Some(Instant::now());
+        let fraction = fraction.clamp(0.0, 1.0);
+        let planned = |i: usize| if self.runs[i] { self.estimates[i] } else { 0.0 };
+        let total: f64 = (0..STAGES).map(planned).sum();
+        let here = planned(self.stage) * fraction;
+        let done = (0..self.stage).map(planned).sum::<f64>() + here;
+        let speed = if here > 0.05 * planned(self.stage) {
+            self.started.elapsed().as_secs_f64() / here
+        } else if self.finished.1 > 30.0 {
+            self.finished.0 / self.finished.1
+        } else {
+            1.0
+        };
+        let event = Event::Progress {
+            n: self.stage + 1,
+            fraction,
+            overall: if total > 0.0 { done / total } else { 1.0 },
+            eta: ((total - done) * speed).round() as u64,
+            what: what.into(),
+        };
+        self.event(event);
     }
 }
 
@@ -157,15 +252,25 @@ impl Job<'_> {
         } else {
             photos(input, s.frames)?
         };
+        let n = if video {
+            s.frames as usize
+        } else {
+            files.len()
+        };
+        let out = &mut Report::new(
+            emit,
+            [
+                n as f64 * if video { 0.025 } else { 0.15 },
+                colmap_estimates(n, video, s.incremental_mapper)
+                    .iter()
+                    .sum(),
+                BRUSH_SECS_PER_WORK * train_work(s.steps),
+            ],
+        );
         let frames_key = format!(
-            "input={} {} frames={} max_size={}",
+            "input={} {} frames={n} max_size={}",
             input.display(),
             fingerprint(&files),
-            if video {
-                s.frames as usize
-            } else {
-                files.len()
-            },
             s.max_size
         );
         let label = if video {
@@ -173,8 +278,8 @@ impl Job<'_> {
         } else {
             "Preparing photos"
         };
-        self.stage(1, label, "images", &frames_key, emit, |job, dir, _| {
-            job.frames(&files, video, s, dir)
+        self.stage(1, label, "images", &frames_key, out, |job, dir, out| {
+            job.frames(&files, video, s, dir, out)
         })?;
 
         let colmap_key = format!(
@@ -186,8 +291,8 @@ impl Job<'_> {
             "Finding camera positions",
             "sparse",
             &colmap_key,
-            emit,
-            |job, dir, emit| job.colmap(video, single_camera, s.incremental_mapper, dir, emit),
+            out,
+            |job, dir, out| job.colmap(video, single_camera, s.incremental_mapper, dir, out),
         )?;
 
         let train_key = format!("{colmap_key} | steps={}", s.steps);
@@ -196,12 +301,12 @@ impl Job<'_> {
             "Training the splat",
             "exports",
             &train_key,
-            emit,
-            |job, dir, emit| job.train(s, dir, emit),
+            out,
+            |job, dir, out| job.train(s, dir, out),
         )?;
 
         if self.control.stopped() {
-            emit(Event::Info {
+            out.event(Event::Info {
                 text: "Stopped early: the result is the latest preview.".into(),
             });
         }
@@ -220,19 +325,15 @@ impl Job<'_> {
         name: &str,
         dir: &str,
         key: &str,
-        emit: &mut dyn FnMut(Event),
-        work: impl FnOnce(&mut Self, &Path, &mut dyn FnMut(Event)) -> Result<(), String>,
+        out: &mut Report<'_>,
+        work: impl FnOnce(&mut Self, &Path, &mut Report<'_>) -> Result<(), String>,
     ) -> Result<(), String> {
         if self.control.stopped() {
             return Err(STOPPED.into());
         }
         let stamp = self.project.join(format!(".{dir}.stamp"));
         let skipped = fs::read_to_string(&stamp).is_ok_and(|s| s == key);
-        emit(Event::Stage {
-            n,
-            name: name.into(),
-            skipped,
-        });
+        out.start(n, name, skipped);
         if skipped {
             return Ok(());
         }
@@ -240,16 +341,12 @@ impl Job<'_> {
         let _ = fs::remove_file(&stamp);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
-        let start = Instant::now();
-        work(self, &dir, emit)?;
+        work(self, &dir, out)?;
         // A stage cut short by Stop keeps its partial result but no stamp, so it re-runs next time.
         if !self.control.stopped() {
             fs::write(&stamp, key).map_err(|e| format!("Can't write {}: {e}", stamp.display()))?;
         }
-        emit(Event::StageDone {
-            n,
-            secs: start.elapsed().as_secs(),
-        });
+        out.done();
         Ok(())
     }
 
@@ -260,9 +357,13 @@ impl Job<'_> {
         video: bool,
         s: &Settings,
         dir: &Path,
+        out: &mut Report<'_>,
     ) -> Result<(), String> {
+        // Also to SDR BT.709, which leaves SDR as it is: phone HDR video (HLG or PQ in BT.2020)
+        // otherwise comes out washed out.
         let scale = format!(
-            "scale=w='min({m},iw)':h='min({m},ih)':force_original_aspect_ratio=decrease",
+            "scale=w='min({m},iw)':h='min({m},ih)':force_original_aspect_ratio=decrease\
+             :out_primaries=bt709:out_transfer=bt709:out_color_matrix=bt709",
             m = s.max_size
         );
         let unreadable = |_| UNREADABLE.to_string();
@@ -284,25 +385,56 @@ impl Job<'_> {
                 .trim()
                 .parse()
                 .map_err(|_| UNREADABLE.to_string())?;
+            // Candidates at CANDIDATES times the frame rate (never above the source's: the fps filter
+            // would repeat frames), each scored by blurdetect; the sharpest of each group is kept.
+            let candidates = CANDIDATES * s.frames as usize;
             let mut ffmpeg = self.cmd("ffmpeg");
             ffmpeg
                 .args(["-hide_banner", "-loglevel", "error", "-i"])
                 .arg(input);
-            // Never above the source rate: the fps filter would repeat frames to get there.
             ffmpeg
                 .args([
                     "-vf",
                     &format!(
-                        "fps='min(source_fps,{})',{scale}",
-                        s.frames as f64 / duration
+                        "fps='min(source_fps,{})',{scale},blurdetect,metadata=print:key=lavfi.blur:file='pipe\\:1'",
+                        candidates as f64 / duration
                     ),
                     "-q:v",
                     "2",
                 ])
-                .arg(dir.join("%04d.jpg"));
-            return self.run(ffmpeg, &mut |_| {}).map_err(unreadable);
+                .arg(dir.join("candidate-%05d.jpg"));
+            let mut blur = Vec::new();
+            self.run(ffmpeg, &mut |line| {
+                if let Some(value) = line.strip_prefix("lavfi.blur=") {
+                    blur.push(value.trim().parse().unwrap_or(f64::MAX));
+                    let done = blur.len() as f64 / candidates as f64;
+                    out.progress(done, "Picking the sharpest frames");
+                }
+            })
+            .map_err(unreadable)?;
+            let candidate = |i: usize| dir.join(format!("candidate-{:05}.jpg", i + 1));
+            let count = (0..).take_while(|&i| candidate(i).exists()).count();
+            if blur.len() != count {
+                blur = vec![0.0; count]; // no scores: evenly spaced frames
+            }
+            let keep = sharpest(&blur, s.frames as usize);
+            let mut kept = 0;
+            for i in 0..count {
+                if keep.get(kept) == Some(&i) {
+                    kept += 1;
+                    fs::rename(candidate(i), dir.join(format!("{kept:04}.jpg")))
+                } else {
+                    fs::remove_file(candidate(i))
+                }
+                .map_err(|e| e.to_string())?;
+            }
+            return Ok(());
         }
         for (i, photo) in files.iter().enumerate() {
+            out.progress(
+                i as f64 / files.len() as f64,
+                &format!("Photo {} of {}", i + 1, files.len()),
+            );
             // Tiled HEIC is stitched by an internal filter graph that can't be combined with -vf.
             let heic = photo.extension().is_some_and(|ext| {
                 ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif")
@@ -335,7 +467,7 @@ impl Job<'_> {
         single_camera: bool,
         incremental: bool,
         sparse: &Path,
-        emit: &mut dyn FnMut(Event),
+        out: &mut Report<'_>,
     ) -> Result<(), String> {
         let (images, database, mapped) = (
             self.project.join("images"),
@@ -345,6 +477,12 @@ impl Job<'_> {
         let _ = fs::remove_file(&database);
         let _ = fs::remove_dir_all(&mapped);
         let _ = fs::remove_file(self.project.join("view.json")); // belongs to the old model
+        let total = fs::read_dir(&images).map(|d| d.count()).unwrap_or(0);
+        // Each step's share of the stage, by its estimated time.
+        let parts = colmap_estimates(total, video, incremental);
+        let share = |step: usize, done: f64| {
+            (parts[..step].iter().sum::<f64>() + parts[step] * done) / parts.iter().sum::<f64>()
+        };
         let mut features = self.cmd("colmap");
         features
             .args(["feature_extractor", "--database_path"])
@@ -357,8 +495,12 @@ impl Job<'_> {
             "--FeatureExtraction.use_gpu",
             "0",
         ]);
-        self.run(features, &mut |_| {})
-            .map_err(|_| "COLMAP failed while finding features.".to_string())?;
+        self.run(features, &mut |line| {
+            if let Some(done) = counter(line) {
+                out.progress(share(0, done), "Finding features");
+            }
+        })
+        .map_err(|_| "COLMAP failed while finding features.".to_string())?;
 
         // Video frames are in order, so neighbours suffice (13x faster in the spike); photos are not.
         let mut matcher = self.cmd("colmap");
@@ -371,8 +513,12 @@ impl Job<'_> {
             .arg("--database_path")
             .arg(&database)
             .args(["--FeatureMatching.use_gpu", "0"]);
-        self.run(matcher, &mut |_| {})
-            .map_err(|_| "COLMAP failed while matching features.".to_string())?;
+        self.run(matcher, &mut |line| {
+            if let Some(done) = counter(line) {
+                out.progress(share(1, done), "Matching features");
+            }
+        })
+        .map_err(|_| "COLMAP failed while matching features.".to_string())?;
 
         fs::create_dir_all(&mapped).map_err(|e| e.to_string())?;
         let mut mapper = self.cmd("colmap");
@@ -397,8 +543,13 @@ impl Job<'_> {
             ]);
         }
         let lost = "Couldn't work out where the camera was. Film slower, keep more overlap between shots, and avoid plain or shiny surfaces.";
-        self.run(mapper, &mut |_| {})
-            .map_err(|_| lost.to_string())?;
+        // The mapper has no counter, so its progress is time against the estimate.
+        let mapping = Instant::now();
+        self.run(mapper, &mut |_| {
+            let done = (mapping.elapsed().as_secs_f64() / parts[2]).min(0.95);
+            out.progress(share(2, done), "Building the 3D model");
+        })
+        .map_err(|_| lost.to_string())?;
         if !mapped.join("0").exists() {
             return Err(lost.into());
         }
@@ -430,7 +581,6 @@ impl Job<'_> {
         let _ = fs::remove_dir_all(&mapped);
         let _ = fs::remove_file(&database);
 
-        let total = fs::read_dir(&images).map(|d| d.count()).unwrap_or(0);
         let analysis = self.capture(
             self.cmd("colmap")
                 .arg("model_analyzer")
@@ -444,11 +594,11 @@ impl Job<'_> {
                 .parse::<usize>()
                 .ok()
         }) {
-            emit(Event::Info {
+            out.event(Event::Info {
                 text: format!("Placed {placed} of {total} frames."),
             });
             if placed * 2 < total {
-                emit(Event::Info {
+                out.event(Event::Info {
                     text: "Many frames couldn't be placed, so the result may have holes.".into(),
                 });
             }
@@ -481,12 +631,7 @@ impl Job<'_> {
         }
     }
 
-    fn train(
-        &mut self,
-        s: &Settings,
-        exports: &Path,
-        emit: &mut dyn FnMut(Event),
-    ) -> Result<(), String> {
+    fn train(&mut self, s: &Settings, exports: &Path, out: &mut Report<'_>) -> Result<(), String> {
         // Brush loads any .ply it finds in the project as starting splats; a previous result must go.
         let scene = self.project.join("scene.ply");
         let _ = fs::remove_file(&scene);
@@ -507,13 +652,19 @@ impl Job<'_> {
             let Some(iter) = refine_iter(line) else {
                 return;
             };
-            emit(Event::Steps { iter, total });
+            // Brush logs a step with each refine (every 200 steps) and stops refining at 95%.
+            let what = if iter + 200 > total / 20 * 19 {
+                "Finishing…".into()
+            } else {
+                format!("{} of {} steps", grouped(iter), grouped(total))
+            };
+            out.progress(train_work(iter) / train_work(total), &what);
             // Brush writes exports without logging it; one untouched for 2 s is complete.
             if let Some(path) = newest_ply(exports, Duration::from_secs(2))
                 && previewed.as_ref() != Some(&path)
             {
                 previewed = Some(path.clone());
-                emit(Event::Preview { path });
+                out.event(Event::Preview { path });
             }
         });
         let stopped = self.control.stopped();
@@ -553,25 +704,27 @@ impl Job<'_> {
         cmd
     }
 
-    /// Runs a command with stdout and stderr appended to log.txt; stdout lines also go to `on_line`.
+    /// Runs a command with its stdout and stderr lines appended to log.txt and passed to `on_line`
+    /// (COLMAP reports on stderr, the others on stdout).
     fn run(&mut self, mut cmd: Command, on_line: &mut dyn FnMut(&str)) -> Result<(), String> {
         if self.control.stopped() {
             return Err(STOPPED.into());
         }
         let _ = writeln!(self.log, "\n$ {cmd:?}");
-        let stderr = self.log.try_clone().map_err(|e| e.to_string())?;
         let mut child = cmd
             .stdout(Stdio::piped())
-            .stderr(stderr)
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Can't start {:?}: {e}", cmd.get_program()))?;
-        let stdout = child.stdout.take().expect("piped stdout");
+        let (sender, lines) = mpsc::channel();
+        forward_lines(child.stdout.take().expect("piped"), sender.clone());
+        forward_lines(child.stderr.take().expect("piped"), sender);
         *self.control.child.lock().unwrap() = Some(child);
         // A stop that came before the child was registered had nothing to kill.
         if self.control.stopped() {
             self.control.stop();
         }
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        for line in lines {
             let _ = writeln!(self.log, "{line}");
             on_line(&line);
         }
@@ -700,6 +853,88 @@ fn newest_ply(dir: &Path, settled: Duration) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
+/// Sends `stream`'s lines to `sender` from a thread of their own. Invalid UTF-8 doesn't end the
+/// reading, which would leave the tool blocked on a full pipe.
+fn forward_lines(stream: impl Read + Send + 'static, sender: mpsc::Sender<String>) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).split(b'\n').map_while(Result::ok) {
+            let line = String::from_utf8_lossy(&line);
+            let _ = sender.send(line.trim_end_matches('\r').to_string());
+        }
+    });
+}
+
+/// Index of the sharpest (least blurred) of each of `keep` equal runs of candidates, or all of
+/// them when there are no more than `keep`.
+fn sharpest(blur: &[f64], keep: usize) -> Vec<usize> {
+    let n = blur.len();
+    if n <= keep {
+        return (0..n).collect();
+    }
+    (0..keep)
+        .map(|i| {
+            (i * n / keep..(i + 1) * n / keep)
+                .min_by(|&a, &b| blur[a].total_cmp(&blur[b]))
+                .expect("runs are never empty when n > keep")
+        })
+        .collect()
+}
+
+/// COLMAP's progress counters: `[i/n]`, and `[i/n, j/m]` for exhaustive matching's blocks.
+fn counter(line: &str) -> Option<f64> {
+    let inside = line.rsplit_once('[')?.1.split_once(']')?.0;
+    let mut counts = inside.split(", ").map(|part| {
+        let (i, n) = part.split_once('/')?;
+        Some((i.trim().parse::<f64>().ok()?, n.trim().parse::<f64>().ok()?))
+    });
+    let (i, n) = counts.next()??;
+    Some(match counts.next() {
+        Some(Some((j, m))) => (i - 1.0 + j / m) / n,
+        _ => i / n,
+    })
+}
+
+/// Seconds on an Apple M5 for COLMAP's features, matching and model with `n` images, from the
+/// spike (exhaustive matching grows with the square of the count).
+fn colmap_estimates(n: usize, video: bool, incremental: bool) -> [f64; 3] {
+    let n = n as f64;
+    [
+        0.1 * n,
+        if video { 0.26 * n } else { 0.022 * n * n },
+        if incremental { 0.6 } else { 0.15 } * n + 3.0,
+    ]
+}
+
+/// Brush's training time for `steps`, in units of its first step. A step costs more as the splats
+/// grow, which they do until step 15,000, where a step costs 7 times the first. This matches the
+/// spike's 30k run (2.3, 7.5, 14.7, 22.6 and 38 minutes at 5k, 10k, 15k, 20k and 30k) within 7%.
+fn train_work(steps: u32) -> f64 {
+    let (steps, grown) = (steps as f64, (steps as f64).min(15_000.0));
+    steps + 6.0 * (grown * grown / 30_000.0 + steps - grown)
+}
+
+/// 4200 as "4,200".
+fn grouped(n: u32) -> String {
+    let digits = n.to_string();
+    let mut text = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
+/// Time left in words.
+pub fn about(secs: u64) -> String {
+    if secs < 60 {
+        "less than a minute".into()
+    } else {
+        format!("about {} min", (secs + 30) / 60)
+    }
+}
+
 /// Brush logs `Refine iter N, X splats.` every 200 steps; its progress bar is hidden when piped.
 fn refine_iter(line: &str) -> Option<u32> {
     line.split("Refine iter ")
@@ -710,7 +945,8 @@ fn refine_iter(line: &str) -> Option<u32> {
         .ok()
 }
 
-// ponytail: guessed error strings, refine from real GPU failures
+// The no-GPU text is from a real failure (`No possible adapter available for backend`).
+// ponytail: the out-of-memory strings are guessed, refine from a real one
 fn brush_hint(log_tail: &str) -> &'static str {
     let tail = log_tail.to_lowercase();
     if tail.contains("out of memory") || tail.contains("outofmemory") {
@@ -863,7 +1099,9 @@ mod tests {
         };
         let runs = std::cell::Cell::new(0);
         let work = |key: &str, job: &mut Job| {
-            job.stage(1, "test", "out", key, &mut |_| {}, |_, dir, _| {
+            let mut ignore = |_: Event| {};
+            let out = &mut Report::new(&mut ignore, [1.0; STAGES]);
+            job.stage(1, "test", "out", key, out, |_, dir, _| {
                 runs.set(runs.get() + 1);
                 fs::write(dir.join(runs.get().to_string()), "").map_err(|e| e.to_string())
             })
@@ -919,6 +1157,49 @@ mod tests {
             "The GPU ran out of memory. Try a lower Detail setting."
         );
         assert_eq!(Settings::detail("high").map(|s| s.steps), Some(30_000));
+    }
+
+    #[test]
+    fn progress_parsing_and_estimates() {
+        assert_eq!(sharpest(&[3., 1., 2., 5., 4., 6.], 2), [1, 4]);
+        assert_eq!(sharpest(&[1., 2.], 5), [0, 1]);
+        let colmap = "I20261015 14:07:38.4 0x1 feature_extraction.cc:120] Processed file [3/10]";
+        assert_eq!(counter(colmap), Some(0.3));
+        assert_eq!(
+            counter("pairing.cc:9] Processing block [2/4, 1/2]"),
+            Some(0.375)
+        );
+        assert_eq!(
+            counter("[2026-10-15T07:51:15Z INFO  brush_cli] Starting up"),
+            None
+        );
+        assert_eq!(counter("pose_graph.cc:51] Loaded 1345 edges"), None);
+        // Spike: 5k and 15k steps of a 30k run took 6% and 39% of its time.
+        let part = |steps| train_work(steps) / train_work(30_000);
+        assert!((part(5_000) - 0.06).abs() < 0.01, "{}", part(5_000));
+        assert!((part(15_000) - 0.39).abs() < 0.03, "{}", part(15_000));
+        assert_eq!(grouped(4200), "4,200");
+        assert_eq!(grouped(30_000), "30,000");
+        assert_eq!(grouped(1_000_000), "1,000,000");
+        assert_eq!(grouped(5), "5");
+    }
+
+    #[test]
+    fn time_left_scales_with_the_speed_seen() {
+        let mut sent = Vec::new();
+        let mut emit = |event| sent.push(event);
+        let mut out = Report::new(&mut emit, [10.0, 100.0, 890.0]);
+        out.start(1, "frames", true);
+        out.start(2, "colmap", false);
+        out.started -= Duration::from_secs(20); // twice as slow as estimated
+        out.sent = None;
+        out.progress(0.1, "");
+        let Some(Event::Progress { overall, eta, .. }) = sent.last() else {
+            panic!("no progress sent");
+        };
+        // Skipped frames count for nothing: 10 of 990 estimated seconds done, 980 left at half speed.
+        assert!((overall - 10.0 / 990.0).abs() < 1e-9);
+        assert_eq!(*eta, 1960);
     }
 
     #[test]

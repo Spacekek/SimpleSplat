@@ -6,3 +6,4 @@ src-tauri/tools
 *.log
 /*.mp4
 /*_splat/
+/result

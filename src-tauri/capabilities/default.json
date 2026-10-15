@@ -9,6 +9,6 @@
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-close",
     "dialog:allow-open",
-    "opener:allow-reveal-item-in-dir"
+    "opener:default"
   ]
 }

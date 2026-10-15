@@ -6,7 +6,8 @@ A desktop app that turns a phone video or a folder of photos into a Gaussian spl
 
 ```
 input: one video OR one photo folder (auto-detected)
-  -> ffmpeg       N frames evenly spaced (video, never above its frame rate) or at most N photos evenly spread, long side <= 1600 px, JPEG -> images/
+  -> ffmpeg       N frames (video: the sharpest of every 3 candidates by blurdetect, never above its frame rate)
+                  or at most N photos evenly spread; long side <= 1600 px, SDR BT.709, upright, JPEG -> images/
                   (tiled HEIC: decode in one call, resize in a second; ffmpeg can't combine them)
   -> colmap       feature_extractor --ImageReader.single_camera 1 (video) --FeatureExtraction.use_gpu 0
   -> colmap       sequential_matcher (video) | exhaustive_matcher (photos)
@@ -41,8 +42,10 @@ Brush loads any `.ply` in the folder it trains on as starting splats, so trainin
 - **Settings screen.** Simple: Detail (Low/Medium/High) and output location. Advanced, collapsed at the bottom: frame count, max image size, training steps, preview export interval, single camera, mapper (global/incremental), keep intermediates, open log folder.
 - **Detail presets:** frames 100/150/300, training steps 5k/15k/30k. On an M5 with 150 frames that is about 2.5/15/38 minutes of training plus about 1 minute of COLMAP.
 - **Preview during training:** a still image, not a live viewer. An idle SuperSplat viewer keeps rendering at 60 fps and slowed training by 16% in the spike. For each export, load it, `captureFrame()`, `destroy()` the viewer and show the image (cost: a few seconds per preview). An "Explore" button opens the live viewer and says training is slower while it is open. Stop kills Brush and keeps the latest complete export.
-- **One job at a time.** Cancel kills the current step (finished steps stay). Closing the window asks first, then kills running tools (Cmd+Q on macOS quits without asking). The machine is kept awake during a job (`caffeinate` on macOS, `systemd-inhibit` on Linux). A system notification fires on finish or failure when the window isn't focused (not on Stop).
-- **GPU failures** are translated, not prevented: "no supported GPU" (needs Metal or Vulkan) and "out of memory" (lower Detail). No startup check unless Brush offers a cheap one.
+- **Progress:** each stage shows a bar and what it is busy with; the header shows the whole job and the time left. Sources: blurdetect's per-frame lines (video), the photo count, COLMAP's `[i/n]` counters (features, matching; `[i/n, j/m]` for exhaustive blocks), time against the estimate for the mapper (it has no counter), and Brush's `Refine iter N` lines, which stop at 95% ("Finishing…"). Each stage has an estimate from the M5 timings below; Brush's assumes a step costs more as splats grow, up to 7 times the first step's cost at 15k, which matches the 30k run within 7%. The speed seen so far scales what's left. The CLI draws one line in a terminal and prints a line per tenth of a stage otherwise.
+- **Sharpest frames:** video is sampled at 3 times the frame count, `blurdetect` scores every candidate, and the least blurred of each three is kept (in the test video the score ran from 4.8 to 7.7, and the extremes look like what they score).
+- **One job at a time.** Cancel kills the current step (finished steps stay). Closing the window or Cmd+Q asks first, then kills running tools (the macOS menu's Quit is our own item for that; the Dock's Quit still doesn't ask). The machine is kept awake during a job (`caffeinate` on macOS, `systemd-inhibit` on Linux). A system notification fires on finish or failure when the window isn't focused (not on Stop).
+- **GPU failures** are translated, not prevented (the no-GPU message is confirmed against a real failure: Brush panics with `No possible adapter available for backend`): "no supported GPU" (needs Metal or Vulkan) and "out of memory" (lower Detail). No startup check unless Brush offers a cheap one.
 
 ### Tools and where they come from
 | Tool | Source | Why |
@@ -60,11 +63,11 @@ Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the
 - **Look:** GNOME / libadwaita patterns (header bars, status page, boxed-list preferences, pill and OSD buttons, Adwaita palette and fonts) on every platform. The header bars are the title bar: on macOS the window buttons float over them (`tauri.macos.conf.json`, overlay title bar); on Linux there is no system title bar (`tauri.linux.conf.json`), so each bar has GNOME's close button, drags the window and maximises on double-click, and tao resizes from the window edges.
 - **Viewer:** SuperSplat viewer (`@playcanvas/supersplat-viewer`, MIT): polished orbit/fly/touch controls, `frameScene()`, WebGPU with WebGL fallback. It has no content swap, so each preview export recreates the viewer (`destroy()` then `createViewer()`). It has no model rotation either, so orientation is fixed in the data by `model_orientation_aligner` before training. It applies the usual 180° Z flip to PLY data, so aligned scenes (up = -Y) show upright. Nice touch: set the initial camera to the first frame's pose (COLMAP camera center and view direction with x and y negated), so the viewer opens on the view the user filmed first.
 - **CLI:** the same binary, arguments parsed with clap. `simplesplat <video|folder> [--detail low|medium|high] [--out DIR]` runs the pipeline headless when given an input, prints one progress line per step, and exits non-zero with the same plain-language message the UI shows. No window, no second binary to package. Advanced settings become flags only when someone needs them. On Windows the release binary is a GUI program: the CLI attaches to the terminal's console, but the shell doesn't wait for it. A console-subsystem copy named `simplesplat.com` beside the `.exe` would fix that, since shells try `.com` first.
-- **Update notice:** at startup, compare the app version with GitHub's latest release tag and show a download link if newer. No in-place updater.
+- **Update notice:** at startup, compare the app version with GitHub's latest release tag and show a download link if newer. No in-place updater. Only CI builds know their repository (`GITHUB_REPOSITORY`, compiled into the frontend), so local builds never check. A pushed `v<version>` tag publishes the installers as that release; CI fails the tag if it doesn't match `src-tauri/Cargo.toml`, the one place the version is set.
 
 ### Nix
 - `flake.nix` provides the development environment: Rust (pinned explicitly at 1.95 or newer, since Brush needs it), cargo-tauri, Node, micromamba, and WebKitGTK and friends on Linux.
-- A Nix package for NixOS: COLMAP and ffmpeg from nixpkgs (version recent enough for the global mapper), Brush built with `rustPlatform` at the same pin, wrapped so these come first on `PATH`. Note that nixpkgs `brush` is an unrelated shell.
+- **Package** (`nix build`, x86_64-linux and aarch64-darwin): COLMAP and ffmpeg from nixpkgs (COLMAP 4.1.1 there, which takes every option we pass), Brush built with `rustPlatform` at the same pin (nixpkgs `brush` is an unrelated shell, and Brush gets the Vulkan loader on its rpath; NixOS supplies the drivers), and the app with nixpkgs' `cargo-tauri.hook`. The tools' folder is compiled into the app (`SIMPLESPLAT_TOOLS_DIR`) instead of a `PATH` wrapper, which would break the macOS `.app`.
 - Release builds for macOS, `.deb` and `.rpm` do not use Nix-built binaries, and run outside `nix develop` (plain rustup, Node, micromamba): anything compiled inside the shell can link against `/nix/store` paths.
 
 ### Packaging
@@ -80,7 +83,7 @@ Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the
 - Before each release: real phone videos on real hardware (Apple Silicon, NVIDIA Linux, AMD or Intel Linux).
 
 ### License
-Public repo, Apache-2.0. Bundled tools run as separate programs: Brush (Apache-2.0), COLMAP (BSD), ffmpeg (LGPL), and COLMAP dependencies including GPL parts of SuiteSparse. Their licenses and source pointers ship in `THIRD_PARTY_LICENSES/` (the bundle script collects them for the 103 conda packages it ships). Still missing before a public release: notices for the Rust crates compiled into Brush and into the app itself (generate with `cargo-about`).
+Public repo, Apache-2.0. Bundled tools run as separate programs: Brush (Apache-2.0), COLMAP (BSD), ffmpeg (LGPL v3: built `--disable-gpl --enable-version3`), and COLMAP dependencies including GPL parts of SuiteSparse and x265 (through OpenImageIO and libheif). Their licenses and source pointers ship in `THIRD_PARTY_LICENSES/` (the bundle script collects them for every conda package it ships, about 90). The Rust crates compiled into Brush and into the app are listed with their license texts by `cargo-about` (`THIRD_PARTY_LICENSES/{brush,simplesplat}/crates.txt`). `scripts/about.toml` accepts permissive licenses (and MPL-2.0) only, so crates also offered under GPL or LGPL come under their permissive option.
 
 ## Spike results (2026-10-15, Apple M5, 24 GB, macOS 26.5)
 
@@ -88,7 +91,8 @@ Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a 
 
 - [x] Moved conda folder: ffmpeg, ffprobe and COLMAP run, and the full pipeline works. The old prefix still appears in 688 files (build metadata), with no effect.
 - [x] Tiled HEIC (4032x3024, 48 tiles) decodes at full size. Resizing needs a second ffmpeg call.
-- [ ] iPhone HEVC/HDR video and EXIF-rotated JPEG photos: not tested (the test video was H.264 SDR).
+- [x] EXIF-rotated JPEG and HEIC (`irot`) photos: ffmpeg 9 turns them upright (checked with test files), and the JPEGs it writes carry no orientation tag, so nothing rotates twice.
+- [ ] HDR video: ffmpeg's scale filter converts frames to SDR BT.709 (`out_transfer`, `out_primaries`), which leaves SDR untouched; checked by round trips of a test pattern through HLG and PQ in BT.2020 (without it, HLG red 254,0,0 came back as 180,67,32; with it 231,5,7). A real iPhone HDR clip is still to try.
 - [x] COLMAP 4.2.1 has `global_mapper` and `model_orientation_aligner`. 150/150 frames registered, 0.8 px reprojection error.
 - [x] Brush: flags, periodic export, piped progress (see Brush notes), distortion models. No GPU probe flag; GPU errors would surface within seconds of starting.
 - [x] Orientation: Brush's own up estimate is tilted about 18° on raw COLMAP output. After `model_orientation_aligner --method IMAGE-ORIENTATION` (instant), up is -Y, and the SuperSplat viewer, placed at frame 1's pose, matches the photo.
@@ -109,10 +113,10 @@ Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a 
 ## Build order
 
 1. ~~Mac spike~~ done, see results above.
-2. ~~Scaffold~~ done on macOS: `flake.nix` (Linux shell evaluates but has not run on Linux yet), Tauri vanilla-ts app, `scripts/bundle_tools.py` (Linux `ldd` path untested).
+2. ~~Scaffold~~ done on macOS: `flake.nix`, Tauri vanilla-ts app, `scripts/bundle_tools.py` (Linux `ldd` path checked in Docker, Windows import-table path against a downloaded win-64 env).
 3. ~~Pipeline + CLI~~ done: `src-tauri/src/pipeline.rs` driven by `simplesplat <input> [--detail] [--out]` (same binary; no arguments starts the app). On the M5, Low takes 3 minutes for the 20 s test video; a re-run skips every stage.
-4. Mac app end to end: all four views on top of the same pipeline, notifications, update notice.
-5. CI: ~~release builds and unit tests on macOS, Linux and Windows~~; still to do: test dataset, smoke runs.
+4. Mac app end to end: all four views on top of the same pipeline, notifications, update notice, progress with time left. Still to do: a click-through of the GUI.
+5. CI: ~~release builds and unit tests on macOS, Linux and Windows, releases from tags~~; still to do: test dataset, smoke runs.
 6. Linux `.deb` and `.rpm`, tested on NVIDIA and on AMD or Intel.
-7. Nix package for NixOS.
-8. Later: notarization, Windows code signing, Flatpak, sharpest-frame selection, multiple videos per scene, a nice progress bar in both CLI and GUI (overall and per-step percentage with ETA; in the CLI only when stdout is a terminal, plain lines otherwise). Version 1 shows which step is running plus the log. Progress sources: ffmpeg's `-progress pipe:1` option, and (seen in the spike) COLMAP's per-image and per-block log lines and Brush's `Refine iter N` log line every 200 steps (its own bar is hidden when piped). Step weights for the overall ETA come from measured timings.
+7. ~~Nix package~~ (`nix build`): built and run on aarch64-darwin; x86_64-linux built in Docker (tests pass, `.desktop` entry included), and its CLI ran ffmpeg and COLMAP from nixpkgs (100 of 100 frames placed); training needs a GPU the container doesn't have. (Under Docker's x86_64 emulation on a Mac the Tauri CLI wrongly rejects the build target, because a missing `rustup` looks like it ran; the test added a stand-in `rustup`. Real Linux doesn't need that.)
+8. Later: notarization, Windows code signing, Flatpak, multiple videos per scene.

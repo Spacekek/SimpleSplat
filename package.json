@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "tools": "python3 scripts/bundle_tools.py",
+    "notices": "python3 scripts/bundle_tools.py --app-notices",
     "tauri": "tauri"
   },
   "dependencies": {

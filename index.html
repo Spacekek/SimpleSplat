@@ -40,6 +40,16 @@
         </div>
         <button id="summary" class="btn flat small"></button>
 
+        <div id="update" class="banner" hidden>
+          <div>
+            <div class="title">Update Available</div>
+            <div id="update-text" class="subtitle"></div>
+          </div>
+          <div class="buttons">
+            <button id="update-get" class="btn suggested">Download</button>
+            <button id="update-close" class="btn flat">Dismiss</button>
+          </div>
+        </div>
         <div id="error" class="banner error" role="alert" hidden>
           <div>
             <div class="title">Couldn't Make the Splat</div>
@@ -59,9 +69,10 @@
         <div class="start"></div>
         <div class="window-title">
           <div class="title">Making Splat</div>
-          <div id="project-name" class="subtitle"></div>
+          <div class="subtitle"><span id="project-name"></span><span id="time-left"></span></div>
         </div>
         <div class="end"><button id="stop" class="btn destructive">Stop</button></div>
+        <progress id="overall" max="1" hidden></progress>
       </header>
       <div class="content columns">
         <div>

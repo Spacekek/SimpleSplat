@@ -1,9 +1,10 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { createViewer } from "@playcanvas/supersplat-viewer/viewer";
 import { defaultSettings } from "@playcanvas/supersplat-viewer/settings";
 import "@playcanvas/supersplat-viewer/viewer.css";
@@ -14,7 +15,7 @@ type JobEvent =
   | { kind: "stage"; n: number; name: string; skipped: boolean }
   | { kind: "stageDone"; n: number; secs: number }
   | { kind: "info"; text: string }
-  | { kind: "steps"; iter: number; total: number }
+  | { kind: "progress"; n: number; fraction: number; overall: number; eta: number; what: string }
   | { kind: "preview"; path: string };
 type Viewer = Awaited<ReturnType<typeof createViewer>>;
 type View = "home" | "progress" | "viewer" | "settings";
@@ -151,7 +152,7 @@ function renderStages() {
       li.dataset.n = String(i + 1);
       li.className = "row";
       li.dataset.state = "pending";
-      li.innerHTML = `<span class="status"></span><div class="row-text"><div class="title"><span class="label">${name}</span><span class="tool">${tool}</span></div><div class="subtitle"></div><progress hidden></progress></div>`;
+      li.innerHTML = `<span class="status"></span><div class="row-text"><div class="title"><span class="label">${name}</span><span class="tool">${tool}</span></div><div class="subtitle"></div><div class="meter" hidden><progress max="1"></progress><div class="caption"></div></div></div>`;
       return li;
     }),
   );
@@ -179,6 +180,9 @@ async function begin(path: string) {
     return;
   }
   projectDir = latestPreview = "";
+  finishAt = 0;
+  showTimeLeft();
+  Object.assign($<HTMLProgressElement>("overall"), { hidden: true, value: 0 });
   renderStages();
   $("project-name").textContent = baseName(path);
   $<HTMLCanvasElement>("preview-canvas").getContext("2d")!.clearRect(0, 0, 800, 450);
@@ -189,6 +193,14 @@ async function begin(path: string) {
   show("progress");
   invoke("start", { request: request(path) }).catch((err) => fail(String(err)));
 }
+
+// Time left, counted down between progress events (Brush is quiet for its last 5%).
+let finishAt = 0;
+function showTimeLeft() {
+  const secs = (finishAt - Date.now()) / 1000;
+  $("time-left").textContent = !finishAt ? "" : secs < 60 ? " · less than a minute left" : ` · about ${Math.round(secs / 60)} min left`;
+}
+setInterval(showTimeLeft, 1000);
 
 // Pipeline errors end with "\nDetails: <log path>"; the path goes behind the Show log button.
 let errorLog = "";
@@ -202,6 +214,25 @@ function fail(message: string) {
   show("home");
 }
 $("error-close").onclick = () => ($("error").hidden = true);
+
+// Update notice: a release build compares its version with the repository's latest release.
+const newer = (a: string, b: string) => {
+  const [x, y] = [a, b].map((v) => v.split(".").map(Number));
+  const i = x.findIndex((part, i) => part !== (y[i] ?? 0));
+  return i >= 0 && x[i] > (y[i] ?? 0);
+};
+if (__REPO__) {
+  Promise.all([getVersion(), fetch(`https://api.github.com/repos/${__REPO__}/releases/latest`).then((r) => r.json())])
+    .then(([version, release]) => {
+      const latest = String(release.tag_name).replace(/^v/, "");
+      if (!newer(latest, version)) return;
+      $("update-text").textContent = `Version ${latest} is available. You have ${version}.`;
+      $("update-get").onclick = () => openUrl(release.html_url);
+      $("update").hidden = false;
+    })
+    .catch(() => {}); // offline, or no releases yet
+}
+$("update-close").onclick = () => ($("update").hidden = true);
 $("error-log").onclick = () => revealItemInDir(errorLog);
 
 listen<JobEvent>("job", ({ payload: e }) => {
@@ -221,9 +252,7 @@ listen<JobEvent>("job", ({ payload: e }) => {
       const li = row(e.n);
       if (li) {
         li.dataset.state = "done";
-        const bar = li.querySelector("progress")!;
-        if (!bar.hidden) li.querySelector(".subtitle")!.textContent = "";
-        bar.hidden = true;
+        li.querySelector<HTMLElement>(".meter")!.hidden = true;
         addDetail(li, `Took ${e.secs < 90 ? `${e.secs} s` : `${Math.round(e.secs / 60)} min`}`);
       }
       break;
@@ -231,14 +260,15 @@ listen<JobEvent>("job", ({ payload: e }) => {
     case "info":
       addDetail($("stages").querySelector<HTMLElement>('li[data-state="running"]'), e.text);
       break;
-    case "steps": {
-      const li = $("stages").querySelector<HTMLElement>('li[data-state="running"]');
-      if (!li) break;
-      const bar = li.querySelector("progress")!;
-      Object.assign(bar, { hidden: false, max: e.total, value: e.iter });
-      // Brush logs the step with each refine (every 200 steps) and stops refining at 95%.
-      const finishing = e.iter + 200 > e.total * 0.95;
-      li.querySelector(".subtitle")!.textContent = finishing ? "Finishing…" : `${e.iter.toLocaleString()} of ${e.total.toLocaleString()} steps`;
+    case "progress": {
+      const meter = row(e.n)?.querySelector<HTMLElement>(".meter");
+      if (!meter) break;
+      meter.hidden = false;
+      meter.querySelector("progress")!.value = e.fraction;
+      meter.querySelector(".caption")!.textContent = e.what;
+      Object.assign($<HTMLProgressElement>("overall"), { hidden: false, value: e.overall });
+      finishAt = Date.now() + e.eta * 1000;
+      showTimeLeft();
       break;
     }
     case "preview":
@@ -251,6 +281,7 @@ listen<JobEvent>("job", ({ payload: e }) => {
 
 listen<{ Ok: string } | { Err: string }>("job-end", ({ payload }) => {
   closeExplorer();
+  finishAt = 0;
   if ("Ok" in payload) openViewer(payload.Ok, dirOf(payload.Ok));
   else if (payload.Err === "Stopped.") show("home");
   else fail(payload.Err);

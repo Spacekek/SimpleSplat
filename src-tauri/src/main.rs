@@ -6,6 +6,7 @@ mod pipeline;
 use clap::Parser;
 use pipeline::{Control, Event, Settings};
 use serde::Deserialize;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -120,21 +121,52 @@ fn allow_folder(app: AppHandle, path: PathBuf) -> Result<(), String> {
 /// Headless run: `simplesplat <input> [--detail ...] [--out ...]`.
 fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
     let settings = Settings::detail(&args.detail).expect("clap checks the value");
-    let mut shown = 0;
-    let print = &mut |event: Event| match event {
-        Event::Project { path } => println!("Project folder: {}", path.display()),
-        Event::Stage { n, name, skipped } => {
-            let done = if skipped { ": already done" } else { "" };
-            println!("[{n}/{}] {name}{done}", pipeline::STAGES);
+    // In a terminal, one progress line redrawn in place; otherwise a line per tenth of a stage.
+    let terminal = std::io::stdout().is_terminal();
+    let mut shown = (0, 0);
+    let print = &mut |event: Event| {
+        if terminal {
+            print!("\r{:79}\r", ""); // clear the progress line
         }
-        Event::StageDone { secs, .. } => println!("      done in {secs}s"),
-        Event::Info { text } => println!("      {text}"),
-        Event::Steps { iter, total } if iter / 1000 > shown / 1000 => {
-            println!("      {iter}/{total} steps");
-            shown = iter;
+        match event {
+            Event::Project { path } => println!("Project folder: {}", path.display()),
+            Event::Stage { n, name, skipped } => {
+                let done = if skipped { ": already done" } else { "" };
+                println!("[{n}/{}] {name}{done}", pipeline::STAGES);
+            }
+            Event::StageDone { secs, .. } => println!("      done in {secs}s"),
+            Event::Info { text } => println!("      {text}"),
+            Event::Progress {
+                n,
+                fraction,
+                overall,
+                eta,
+                what,
+            } => {
+                let bar: String = (0..20)
+                    .map(|i| {
+                        if (i as f64) < fraction * 20.0 {
+                            '#'
+                        } else {
+                            '.'
+                        }
+                    })
+                    .collect();
+                let line = format!(
+                    "      {bar} {what}  {:.0}% in all, {} left",
+                    overall * 100.0,
+                    pipeline::about(eta)
+                );
+                if terminal {
+                    print!("{line}");
+                    let _ = std::io::stdout().flush();
+                } else if (n, (fraction * 10.0) as u32) != shown {
+                    shown = (n, (fraction * 10.0) as u32);
+                    println!("{line}");
+                }
+            }
+            Event::Preview { path } => println!("      preview: {}", path.display()),
         }
-        Event::Steps { .. } => {}
-        Event::Preview { path } => println!("      preview: {}", path.display()),
     };
     let control = Control::default();
     match pipeline::run(
@@ -172,10 +204,15 @@ fn attach_console() {
 
 fn main() -> ExitCode {
     let context = tauri::generate_context!();
-    let tools =
-        tauri::utils::platform::resource_dir(context.package_info(), &tauri::Env::default())
-            .ok()
-            .map(|dir| dir.join("tools/bin"));
+    // Packages built against system tools (the Nix flake) name their folder at build time;
+    // the installers carry theirs as a resource.
+    let tools = option_env!("SIMPLESPLAT_TOOLS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            tauri::utils::platform::resource_dir(context.package_info(), &tauri::Env::default())
+                .ok()
+                .map(|dir| dir.join("tools/bin"))
+        });
 
     // macOS can pass -psn_0_… to the first launch of a downloaded app; it isn't a CLI argument.
     let args: Vec<String> = std::env::args()
@@ -186,7 +223,7 @@ fn main() -> ExitCode {
         attach_console();
         return cli(Cli::parse_from(args), tools);
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -194,38 +231,25 @@ fn main() -> ExitCode {
             tools,
             job: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![start, stop, allow_folder])
-        .build(context)
+        .invoke_handler(tauri::generate_handler![start, stop, allow_folder]);
+    // macOS's own Quit (Cmd+Q) ends the app at once; this one asks first while a job runs.
+    #[cfg(target_os = "macos")]
+    let app = app.menu(quit_that_asks).on_menu_event(|app, event| {
+        if event.id() == "quit" && !ask_to_quit(app, "main") {
+            app.exit(0);
+        }
+    });
+    app.build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
-            // Closing the window mid-job asks first. (Cmd+Q on macOS goes straight to Exit; catching
-            // it would take a custom app menu.)
             RunEvent::WindowEvent {
                 label,
                 event: WindowEvent::CloseRequested { api, .. },
                 ..
-            } if app.state::<AppState>().job.lock().unwrap().is_some() => {
-                api.prevent_close();
-                let handle = app.clone();
-                let mut ask = app
-                    .dialog()
-                    .message(
-                        "Finished steps are kept and skipped next time, but training starts over.",
-                    )
-                    .title("Quit While Making a Splat?")
-                    .kind(MessageDialogKind::Warning)
-                    .buttons(MessageDialogButtons::OkCancelCustom(
-                        "Quit".into(),
-                        "Keep Going".into(),
-                    ));
-                if let Some(window) = app.get_webview_window(&label) {
-                    ask = ask.parent(&window);
+            } => {
+                if ask_to_quit(app, &label) {
+                    api.prevent_close();
                 }
-                ask.show(move |quit| {
-                    if quit {
-                        handle.exit(0);
-                    }
-                });
             }
             // Tools are separate processes and would outlive the app.
             RunEvent::Exit => {
@@ -236,4 +260,51 @@ fn main() -> ExitCode {
             _ => {}
         });
     ExitCode::SUCCESS
+}
+
+/// While a job runs, asks whether to quit and quits on yes; false when there is nothing to ask.
+fn ask_to_quit(app: &AppHandle, window: &str) -> bool {
+    if app.state::<AppState>().job.lock().unwrap().is_none() {
+        return false;
+    }
+    let handle = app.clone();
+    let mut ask = app
+        .dialog()
+        .message("Finished steps are kept and skipped next time, but training starts over.")
+        .title("Quit While Making a Splat?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit".into(),
+            "Keep Going".into(),
+        ));
+    if let Some(window) = app.get_webview_window(window) {
+        ask = ask.parent(&window);
+    }
+    ask.show(move |quit| {
+        if quit {
+            handle.exit(0);
+        }
+    });
+    true
+}
+
+/// The default macOS menu, with its Quit (the app menu's last item) swapped for one of ours.
+#[cfg(target_os = "macos")]
+fn quit_that_asks(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+    let menu = Menu::default(app)?;
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first()
+        && let Some(quit) = app_menu.items()?.last()
+    {
+        app_menu.remove(quit)?;
+        let name = &app.package_info().name;
+        app_menu.append(&MenuItem::with_id(
+            app,
+            "quit",
+            format!("Quit {name}"),
+            true,
+            Some("CmdOrCtrl+Q"),
+        )?)?;
+    }
+    Ok(menu)
 }

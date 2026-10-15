@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build src-tauri/tools: trimmed ffmpeg + COLMAP from conda-forge, plus Brush from a pinned commit.
 
-Needs micromamba and cargo (Rust >= 1.95) on PATH; `nix develop` provides both.
+Needs micromamba, cargo (Rust >= 1.95) and cargo-about on PATH; `nix develop` provides them.
 Does nothing when src-tauri/tools/.stamp matches the pins below.
 """
 
@@ -13,6 +13,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import urllib.request
 from pathlib import Path
 
@@ -27,7 +28,7 @@ CONDA_SPECS = ["colmap=4.2.1=cpu*", "ffmpeg=*=lgpl*", "libblas=*=*openblas"]
 FAISS_CPU = "libfaiss=*=*cpu*"
 CONDA_BINS = ["colmap", "ffmpeg", "ffprobe"]
 BRUSH_REPO = "https://github.com/ArthurBrussee/brush"
-BRUSH_REV = "1388f74c6fe0236f68ee4915564bf00e9d2e3747"
+BRUSH_REV = "1388f74c6fe0236f68ee4915564bf00e9d2e3747"  # also in flake.nix
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "src-tauri" / "tools"
@@ -129,16 +130,27 @@ def conda_tools() -> None:
 
 def brush() -> None:
     root = CACHE / f"brush-{BRUSH_REV[:12]}"
-    exe = root / "bin" / f"brush-cli{EXE}"
+    src, exe, crates = root / "src", root / "bin" / f"brush-cli{EXE}", root / "crates.txt"
+    if not src.exists():
+        with urllib.request.urlopen(f"{BRUSH_REPO}/archive/{BRUSH_REV}.tar.gz") as r, tarfile.open(fileobj=r, mode="r|gz") as tar:
+            tar.extractall(root, filter="data")
+        (root / f"brush-{BRUSH_REV}").rename(src)
     if not exe.exists():
         env = dict(os.environ, CARGO_PROFILE_RELEASE_STRIP="true")
-        run("cargo", "install", "--locked", "--git", BRUSH_REPO, "--rev", BRUSH_REV, "--root", root, "brush-cli", env=env)
+        run("cargo", "install", "--locked", "--path", src / "apps" / "brush-cli", "--root", root, env=env)
+    if not crates.exists():
+        notices(src / "apps" / "brush-cli" / "Cargo.toml", crates)
     shutil.copy2(exe, OUT / "bin" / exe.name)
-    # ponytail: Brush's own license only; its crate dependencies' notices need cargo-about before a public release
     dest = OUT / "THIRD_PARTY_LICENSES" / "brush"
     dest.mkdir(parents=True)
-    with urllib.request.urlopen(f"{BRUSH_REPO}/raw/{BRUSH_REV}/LICENSE") as r:
-        (dest / "LICENSE").write_bytes(r.read())
+    shutil.copy2(src / "LICENSE", dest / "LICENSE")
+    shutil.copy2(crates, dest / "crates.txt")
+
+
+def notices(manifest: Path, out: Path) -> None:
+    """Licenses of the Rust crates compiled into `manifest`'s program, written to `out` by cargo-about."""
+    about = ROOT / "scripts"
+    run("cargo", "about", "generate", "-c", about / "about.toml", "--manifest-path", manifest, about / "about.hbs", "-o", out)
 
 
 def smoke_test() -> None:
@@ -151,6 +163,11 @@ def smoke_test() -> None:
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--app-notices"]:  # run by every release build, since the app's crates change
+        out = OUT / "THIRD_PARTY_LICENSES" / "simplesplat"
+        out.mkdir(parents=True, exist_ok=True)
+        notices(ROOT / "src-tauri" / "Cargo.toml", out / "crates.txt")
+        return
     stamp = OUT / ".stamp"
     if stamp.exists() and stamp.read_text() == STAMP:
         print("tools up to date")
