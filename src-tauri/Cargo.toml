@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+dirs = "7"
 
 # https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

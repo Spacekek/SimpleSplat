@@ -15,6 +15,16 @@ cargo tauri build   # release bundle; see the note below
 
 Release builds for other people's machines run outside `nix develop` (plain rustup, Node, micromamba), because binaries built inside the Nix shell can link against `/nix/store` paths.
 
+## Command line
+
+The app binary doubles as a CLI: given an input it runs headless, without a window.
+
+```sh
+simplesplat <video | photo folder> [--detail low|medium|high] [--out DIR]
+```
+
+Results go to `<name>_splat/` next to the input (or inside `--out DIR`), with `scene.ply` as the result. Running it again skips finished stages. On macOS the binary is `SimpleSplat.app/Contents/MacOS/simplesplat`.
+
 ## License
 
 Apache-2.0. Bundled tools keep their own licenses, collected in `tools/THIRD_PARTY_LICENSES`.

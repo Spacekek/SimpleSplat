@@ -20,16 +20,20 @@ Each step is a separate process with its own progress line in the UI and its own
 
 ### Project folder
 
-Written next to the input as `<name>_splat/` (falls back to the app data folder if that location is not writable). Everything is kept, and a re-run skips steps whose output already exists, so changing Detail only re-trains.
+Written next to the input as `<name>_splat/` (falls back to the app data folder if that location is not writable). Everything is kept. Each stage writes a hidden `.<folder>.stamp` with the settings that produced it, including the previous stage's stamp: a re-run skips stages whose stamp matches, and changing a setting re-runs that stage and everything after it. Changing training steps only re-trains; changing Detail also changes the frame count, so it redoes everything.
 
 ```
 <name>_splat/
+  scene.ply      the result
   images/        normalized frames/photos
   database.db    COLMAP features and matches
-  sparse/        COLMAP model
-  *.ply          periodic exports and final scene
-  log.txt        output of every step
+  sparse/0/      COLMAP model, aligned upright
+  exports/       periodic Brush exports (the last one becomes scene.ply)
+  log.txt        output of every tool
+  .*.stamp       what produced each stage
 ```
+
+Brush loads any `.ply` in the folder it trains on as starting splats, so training deletes the old `scene.ply` and `exports/` first. Brush also writes a `Vertical axis` comment into its PLY; it is a guess (it said +Z for a scene that is -Y up) and the SuperSplat viewer ignores it.
 
 ## Decisions
 
@@ -106,7 +110,7 @@ Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a 
 
 1. ~~Mac spike~~ done, see results above.
 2. ~~Scaffold~~ done on macOS: `flake.nix` (Linux shell evaluates but has not run on Linux yet), Tauri vanilla-ts app, `scripts/bundle_tools.py` (Linux `ldd` path untested).
-3. Pipeline + CLI: the Rust pipeline module driven from the command line, so it is usable and testable before any UI exists.
+3. ~~Pipeline + CLI~~ done: `src-tauri/src/pipeline.rs` driven by `simplesplat <input> [--detail] [--out]` (same binary; no arguments starts the app). On the M5, Low takes 3 minutes for the 20 s test video; a re-run skips every stage.
 4. Mac app end to end: all four views on top of the same pipeline, notifications, update notice.
 5. CI: test dataset, unit tests, smoke runs, release builds.
 6. Linux `.deb` and `.rpm`, tested on NVIDIA and on AMD or Intel.
