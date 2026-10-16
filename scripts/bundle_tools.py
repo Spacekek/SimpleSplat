@@ -45,7 +45,7 @@ def run(*cmd, env=None):
 
 
 def pe_imports(path: Path) -> set[str]:
-    """DLL names a Windows executable or DLL imports, delay-loaded ones included."""
+    """DLL names a Windows executable or DLL imports, delay-loaded ones and export forwarders included."""
     data = path.read_bytes()
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     sections, optional_size = struct.unpack_from("<2xH12xH", data, pe + 4)
@@ -64,6 +64,17 @@ def pe_imports(path: Path) -> set[str]:
             start = offset(name)
             names.add(data[start : data.index(b"\0", start)].decode())
             rva += size
+    # Exports forwarded to another DLL ("openblas.dll.dgemm_"): conda's libblas.dll and liblapack.dll
+    # are nothing else, so the DLL doing the work appears in no import table.
+    exports, size = struct.unpack_from("<II", data, directories)
+    if exports:
+        count, functions = struct.unpack_from("<20xI4xI", data, offset(exports))
+        for i in range(count):
+            target = struct.unpack_from("<I", data, offset(functions) + 4 * i)[0]
+            if exports <= target < exports + size:  # an RVA inside the export directory is a forwarder string
+                start = offset(target)
+                module = data[start : data.index(b"\0", start)].decode().rsplit(".", 1)[0]
+                names.add(module if module.lower().endswith(".dll") else f"{module}.dll")
     return names
 
 
