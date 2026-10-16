@@ -1,8 +1,9 @@
 name: Build
 
+# Release tags only (minutes on a private repo are limited); Run workflow in the Actions tab builds any branch.
 on:
   push:
-  pull_request:
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -29,9 +30,19 @@ jobs:
         shell: bash
         run: test "$GITHUB_REF_NAME" = "v$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
 
-      # The conda env, Brush's build and the app's don't fit in the runner's free space otherwise.
+      # Brush is the slowest part of the tools to build (47 min on Windows), and changes only with its
+      # pinned commit. Saved even when a later step fails, so a failed run doesn't build it again.
+      - uses: actions/cache/restore@v4
+        id: brush
+        with:
+          path: .cache/brush-*
+          key: brush-${{ runner.os }}-${{ hashFiles('scripts/bundle_tools.py') }}
+          restore-keys: brush-${{ runner.os }}-
+
+      # Building Brush on top of the conda env and the app doesn't fit in the runner's free space.
+      # Deleting takes 4 minutes, so only when Brush isn't cached.
       - name: Free disk space (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && hashFiles('.cache/brush-*/bin/*') == ''
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
 
       - name: Linux build dependencies
@@ -50,6 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-on-failure: true # a failing job would otherwise compile every crate again next time
 
       - uses: taiki-e/install-action@v2 # license notices of the Rust crates
         with:
@@ -61,15 +73,6 @@ jobs:
           mkdir -p ~/micromamba && cd ~/micromamba
           curl -fsSL "https://micro.mamba.pm/api/micromamba/${{ matrix.mamba }}/latest" | tar -xj
           if [ "$RUNNER_OS" = Windows ]; then cygpath -w "$PWD/Library/bin"; else echo "$PWD/bin"; fi >> "$GITHUB_PATH"
-
-      # Brush is the slowest part of the tools to build (47 min on Windows), and changes only with its
-      # pinned commit. Saved even when a later step fails, so a failed run doesn't build it again.
-      - uses: actions/cache/restore@v4
-        id: brush
-        with:
-          path: .cache/brush-*
-          key: brush-${{ runner.os }}-${{ hashFiles('scripts/bundle_tools.py') }}
-          restore-keys: brush-${{ runner.os }}-
 
       - run: npm ci
       # Builds the tools (scripts/bundle_tools.py), the frontend and the installers.

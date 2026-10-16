@@ -15,7 +15,7 @@ npm run tauri build   # installers in src-tauri/target/release/bundle
 
 Without Nix you need Rust 1.95 or newer, Node, Python 3, micromamba and (for release builds, which write the Rust crates' license notices) cargo-about on `PATH`, and on Linux the [Tauri system packages](https://tauri.app/start/prerequisites/). Release builds for other people's machines run that way, outside `nix develop`, because binaries built inside the Nix shell can link against `/nix/store` paths. On Windows the same commands work from a normal terminal.
 
-CI (`.github/workflows/build.yml`) builds every push on macOS (Apple Silicon: `.dmg`), Linux (x64: `.deb`, `.rpm`) and Windows (x64: NSIS installer), and keeps the installers as build artifacts.
+CI (`.github/workflows/build.yml`) builds each pushed `v*` tag, or any branch from **Run workflow** in the Actions tab, on macOS (Apple Silicon: `.dmg`), Linux (x64: `.deb`, `.rpm`) and Windows (x64: NSIS installer), and keeps the installers as build artifacts.
 
 To release: bump `version` in `src-tauri/Cargo.toml` (the only place it is set), then push a tag `v<version>`. CI checks that the two match, builds the installers and publishes them as a GitHub release, where the app's update notice finds them.
 

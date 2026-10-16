@@ -79,7 +79,7 @@ Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the
 ### Quality
 - Rust unit tests for pure logic: frame sampling math, error text to message mapping, step skipping.
 - A tiny dataset in the repo (about 20 photos of one object, 400 px).
-- CI on every push (`.github/workflows/build.yml`): builds the macOS, Linux and Windows installers and runs the unit tests. Still to add: the CLI runs the full pipeline on Linux with Brush at about 100 steps on Mesa lavapipe (software Vulkan); on macOS, ffmpeg and COLMAP run from the moved conda bundle.
+- CI on release tags and on demand (`.github/workflows/build.yml`): builds the macOS, Linux and Windows installers and runs the unit tests. Still to add: the CLI runs the full pipeline on Linux with Brush at about 100 steps on Mesa lavapipe (software Vulkan); on macOS, ffmpeg and COLMAP run from the moved conda bundle.
 - Before each release: real phone videos on real hardware (Apple Silicon, NVIDIA Linux, AMD or Intel Linux).
 
 ### License
