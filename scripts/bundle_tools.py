@@ -165,7 +165,30 @@ def smoke_test() -> None:
         first = (out.stdout or out.stderr).splitlines()[:1]
         print(f"{name}: exit {out.returncode}: {first[0] if first else '(no output)'}")
         if out.returncode != 0:
+            if WINDOWS:
+                for line in unloadable(OUT / "bin"):
+                    print("  can't load", line)
             sys.exit(f"{name} does not run from the bundle")
+
+
+def unloadable(folder: Path) -> list[str]:
+    """What Windows can't load: DLLs in `folder`, and the imports its files find elsewhere (in Windows).
+
+    A failed start only says some DLL is missing (0xC0000135); loading each piece names it.
+    """
+    import ctypes
+
+    failed = []
+    for path in sorted(folder.iterdir()):
+        if path.suffix.lower() not in (".dll", ".exe"):
+            continue
+        own = [str(path)] if path.suffix.lower() == ".dll" else []
+        for name in own + [n for n in pe_imports(path) if not (folder / n).exists()]:
+            try:
+                ctypes.WinDLL(name)  # a full path finds its own imports beside it
+            except OSError as e:
+                failed.append(f"{path.name}: {Path(name).name}: {e}")
+    return failed
 
 
 def main() -> None:
