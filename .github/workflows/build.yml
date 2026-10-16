@@ -39,10 +39,10 @@ jobs:
           key: brush-${{ runner.os }}-${{ hashFiles('scripts/bundle_tools.py') }}
           restore-keys: brush-${{ runner.os }}-
 
-      # Building Brush on top of the conda env and the app doesn't fit in the runner's free space.
-      # Deleting takes 4 minutes, so only when Brush isn't cached.
+      # The conda env, the app's build and the .deb and .rpm (each with a copy of the tools) don't fit
+      # in the runner's free space, even with Brush cached. Deleting takes about 4 minutes.
       - name: Free disk space (Linux)
-        if: runner.os == 'Linux' && hashFiles('.cache/brush-*/bin/*') == ''
+        if: runner.os == 'Linux'
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
 
       - name: Linux build dependencies
