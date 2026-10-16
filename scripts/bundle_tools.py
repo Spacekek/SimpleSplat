@@ -71,7 +71,13 @@ def linked_libs(binary: Path, prefix: Path) -> dict[str, Path]:
     """Libraries `binary` loads from the conda prefix, as {name it is loaded by: real file}."""
     if WINDOWS:
         dlls = {dll.name.lower(): dll for folder in (prefix / "Library" / "bin", prefix) for dll in folder.glob("*.dll")}
-        return {dlls[n].name: dlls[n] for n in map(str.lower, pe_imports(binary)) if n in dlls}
+        imports = list(map(str.lower, pe_imports(binary)))
+        # A package that forgets a dependency (onnxruntime-cpp 1.31.0 build 0 did) leaves its DLL out of
+        # the env; the bundle would then only fail at run time, with an exit code that names nothing.
+        system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        if missing := [n for n in imports if n not in dlls and not n.startswith(("api-ms-", "ext-ms-")) and not (system / n).exists()]:
+            sys.exit(f"{binary.name} needs {', '.join(missing)}, found neither in the conda env nor in Windows")
+        return {dlls[n].name: dlls[n] for n in imports if n in dlls}
     if sys.platform == "darwin":
         out = subprocess.run(["otool", "-L", binary], capture_output=True, text=True, check=True).stdout
         names = [line.strip().split(" (")[0] for line in out.splitlines()[1:]]

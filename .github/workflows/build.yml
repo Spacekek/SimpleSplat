@@ -29,6 +29,11 @@ jobs:
         shell: bash
         run: test "$GITHUB_REF_NAME" = "v$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
 
+      # The conda env, Brush's build and the app's don't fit in the runner's free space otherwise.
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -57,8 +62,10 @@ jobs:
           curl -fsSL "https://micro.mamba.pm/api/micromamba/${{ matrix.mamba }}/latest" | tar -xj
           if [ "$RUNNER_OS" = Windows ]; then cygpath -w "$PWD/Library/bin"; else echo "$PWD/bin"; fi >> "$GITHUB_PATH"
 
-      # Brush is the slowest part of the tools to build, and changes only with its pinned commit.
-      - uses: actions/cache@v4
+      # Brush is the slowest part of the tools to build (47 min on Windows), and changes only with its
+      # pinned commit. Saved even when a later step fails, so a failed run doesn't build it again.
+      - uses: actions/cache/restore@v4
+        id: brush
         with:
           path: .cache/brush-*
           key: brush-${{ runner.os }}-${{ hashFiles('scripts/bundle_tools.py') }}
@@ -67,6 +74,11 @@ jobs:
       - run: npm ci
       # Builds the tools (scripts/bundle_tools.py), the frontend and the installers.
       - run: npx tauri build
+      - uses: actions/cache/save@v4
+        if: always() && steps.brush.outputs.cache-hit != 'true' && hashFiles('.cache/brush-*/bin/*') != ''
+        with:
+          path: .cache/brush-*
+          key: ${{ steps.brush.outputs.cache-primary-key }}
       # After the build: compiling needs the tools folder and the frontend to exist.
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
