@@ -48,7 +48,6 @@ struct Request {
     max_size: Option<u32>,
     export_every: Option<u32>,
     single_camera: Option<bool>,
-    incremental_mapper: Option<bool>,
     keep_intermediates: Option<bool>,
 }
 
@@ -60,7 +59,6 @@ fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(),
     s.max_size = request.max_size.unwrap_or(s.max_size);
     s.export_every = request.export_every;
     s.single_camera = request.single_camera;
-    s.incremental_mapper = request.incremental_mapper.unwrap_or(s.incremental_mapper);
     s.keep_intermediates = request.keep_intermediates.unwrap_or(s.keep_intermediates);
 
     let mut job = state.job.lock().unwrap();

@@ -1,205 +1,109 @@
 #!/usr/bin/env python3
-"""Build src-tauri/tools: trimmed ffmpeg + COLMAP from conda-forge, plus Brush from a pinned commit.
+"""Build src-tauri/tools: ffmpeg and Spirula, pinned self-contained binaries for this platform.
 
-Needs micromamba, cargo (Rust >= 1.95) and cargo-about on PATH; `nix develop` provides them.
-Does nothing when src-tauri/tools/.stamp matches the pins below.
+Does nothing when src-tauri/tools/.stamp matches the pins below. `--app-notices` needs cargo-about
+on PATH (`nix develop` provides it).
 """
 
 import hashlib
+import io
 import json
-import os
 import platform
 import shutil
-import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
-# ponytail: top-level pins only; export an explicit lockfile (micromamba env export --explicit) if builds drift
-# OpenBLAS everywhere: on Windows the solver picks MKL, which loads most of itself at runtime, out of
-# sight of the import walk below (macOS and Linux already get OpenBLAS).
-CONDA_SPECS = ["colmap=4.2.1=cpu*", "ffmpeg=*=lgpl*", "libblas=*=*openblas"]
-# conda-forge's CPU COLMAP builds for Linux and Windows still depend on the CUDA build of faiss, which
-# brings about 670 MB of cuBLAS. COLMAP uses faiss only for image retrieval, which this pipeline
-# doesn't do, so the CPU build of the same version replaces it; the smoke test checks colmap loads.
-# ponytail: drop once colmap-feedstock's cpu builds depend on libfaiss *_cpu
-FAISS_CPU = "libfaiss=*=*cpu*"
-CONDA_BINS = ["colmap", "ffmpeg", "ffprobe"]
-BRUSH_REPO = "https://github.com/ArthurBrussee/brush"
-BRUSH_REV = "1388f74c6fe0236f68ee4915564bf00e9d2e3747"  # also in flake.nix
+SPIRULA = "https://github.com/harry7557558/spirula-studio/releases/download/v2026.10.16/spirula-2026.10.16"
+BTBN = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-16-13-04/ffmpeg-n9.0.2-28-g669f5ab083"
+RIEDL = "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2"
+FFMPEG_GIT = "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n9.0.2"
+# Per platform, each tool: (download, its sha256, the program inside it). Both run as separate
+# programs. Spirula's macOS binary sits in a .app in a .dmg. macOS's static ffmpeg is GPL (it has
+# x264 and x265 in it), like Spirula; Linux's and Windows' are LGPL.
+TOOLS = {
+    ("darwin", "arm64"): {
+        "spirula": (f"{SPIRULA}-macos-vulkan-arm64.dmg", "08b332e833ecafcc636e1be6b38dd0a732c6202a0fcf41d2c84209be5fdd6f03", "Spirula Studio.app/Contents/MacOS/spirula"),
+        "ffmpeg": (f"{RIEDL}/ffmpeg.zip", "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924", "ffmpeg"),
+    },
+    ("linux", "x86_64"): {
+        "spirula": (f"{SPIRULA}-ubuntu-vulkan-x86_64.zip", "df5bb7acbfea63c16497c229b70c7a05ed13c22807554dee83cd6415aa411bf3", "spirula"),
+        "ffmpeg": (f"{BTBN}-linux64-lgpl-9.0.tar.xz", "5e90ecce92a64495345f7d92c3238ca579483e54c20671c0a9e1eac6096a6882", "ffmpeg-n9.0.2-28-g669f5ab083-linux64-lgpl-9.0/bin/ffmpeg"),
+    },
+    ("win32", "AMD64"): {
+        "spirula": (f"{SPIRULA}-windows-vulkan-x86_64.zip", "9b83ba6d78a4ace562d2ad2f964d2e3eb15aaa7a78918eab54e44d8a98a649d0", "spirula.exe"),
+        "ffmpeg": (f"{BTBN}-win64-lgpl-9.0.zip", "fe7aab7fb1e83b4be657ae46d949a01812cabc60d35766d51fad8dcf97c69319", "ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-9.0/bin/ffmpeg.exe"),
+    },
+}
+# What goes into THIRD_PARTY_LICENSES/<tool>: license texts to download, and where the source is.
+GPL_FFMPEG = sys.platform == "darwin"
+NOTICES = {
+    "spirula": (
+        ["https://raw.githubusercontent.com/harry7557558/spirula-studio/v2026.10.16/LICENSE"],
+        "Spirula Studio 2026.10.16, GPL-3.0: https://github.com/harry7557558/spirula-studio/tree/v2026.10.16",
+    ),
+    "ffmpeg": (
+        [f"{FFMPEG_GIT}/LICENSE.md", f"{FFMPEG_GIT}/COPYING.GPLv2" if GPL_FFMPEG else f"{FFMPEG_GIT}/COPYING.LGPLv2.1"]
+        + ([f"{RIEDL}/versions.txt"] if GPL_FFMPEG else []),
+        "FFmpeg 9.0.2: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz, built by "
+        + ("https://git.martin-riedl.de/ffmpeg/build-script (GPL: with x264, x265; versions.txt lists each library)"
+           if GPL_FFMPEG else "https://github.com/BtbN/FFmpeg-Builds (LGPL)"),
+    ),
+}
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "src-tauri" / "tools"
 CACHE = ROOT / ".cache"
-# Any change to this script (pins included) rebuilds the bundle; the slow parts stay cached in .cache.
+# Any change to this script (pins included) rebuilds the bundle; downloads stay cached in .cache.
 STAMP = json.dumps([hashlib.sha1(Path(__file__).read_bytes()).hexdigest(), sys.platform, platform.machine()])
-WINDOWS = sys.platform == "win32"
-EXE = ".exe" if WINDOWS else ""
 
 
-def run(*cmd, env=None):
+def run(*cmd):
     print("+", *cmd, flush=True)
-    subprocess.run([str(c) for c in cmd], check=True, env=env)
+    subprocess.run([str(c) for c in cmd], check=True)
 
 
-def pe_imports(path: Path) -> set[str]:
-    """DLL names a Windows executable or DLL imports, delay-loaded ones and export forwarders included."""
-    data = path.read_bytes()
-    pe = struct.unpack_from("<I", data, 0x3C)[0]
-    sections, optional_size = struct.unpack_from("<2xH12xH", data, pe + 4)
-    optional = pe + 24
-    directories = optional + (112 if struct.unpack_from("<H", data, optional)[0] == 0x20B else 96)
-    table = [struct.unpack_from("<8xIIII", data, optional + optional_size + 40 * i) for i in range(sections)]
-
-    def offset(rva: int) -> int:
-        return next(raw + rva - va for size, va, raw_size, raw in table if va <= rva < va + max(size, raw_size))
-
-    names = set()
-    # (data directory, descriptor size, offset of the DLL name in it): imports, delay-load imports
-    for directory, size, name_at in [(1, 20, 12), (13, 32, 4)]:
-        rva = struct.unpack_from("<I", data, directories + 8 * directory)[0]
-        while rva and (name := struct.unpack_from("<I", data, offset(rva) + name_at)[0]):
-            start = offset(name)
-            names.add(data[start : data.index(b"\0", start)].decode())
-            rva += size
-    # Exports forwarded to another DLL ("openblas.dll.dgemm_"): conda's libblas.dll and liblapack.dll
-    # are nothing else, so the DLL doing the work appears in no import table.
-    exports, size = struct.unpack_from("<II", data, directories)
-    if exports:
-        count, functions = struct.unpack_from("<20xI4xI", data, offset(exports))
-        for i in range(count):
-            target = struct.unpack_from("<I", data, offset(functions) + 4 * i)[0]
-            if exports <= target < exports + size:  # an RVA inside the export directory is a forwarder string
-                start = offset(target)
-                module = data[start : data.index(b"\0", start)].decode().rsplit(".", 1)[0]
-                names.add(module if module.lower().endswith(".dll") else f"{module}.dll")
-    return names
+def download(url: str) -> bytes:
+    print("+ download", url, flush=True)
+    # martin-riedl.de refuses Python's default user agent.
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "simplesplat-tools"})) as r:
+        return r.read()
 
 
-def linked_libs(binary: Path, prefix: Path) -> dict[str, Path]:
-    """Libraries `binary` loads from the conda prefix, as {name it is loaded by: real file}."""
-    if WINDOWS:
-        dlls = {dll.name.lower(): dll for folder in (prefix / "Library" / "bin", prefix) for dll in folder.glob("*.dll")}
-        imports = list(map(str.lower, pe_imports(binary)))
-        # A package that forgets a dependency (onnxruntime-cpp 1.31.0 build 0 did) leaves its DLL out of
-        # the env; the bundle would then only fail at run time, with an exit code that names nothing.
-        system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
-        if missing := [n for n in imports if n not in dlls and not n.startswith(("api-ms-", "ext-ms-")) and not (system / n).exists()]:
-            sys.exit(f"{binary.name} needs {', '.join(missing)}, found neither in the conda env nor in Windows")
-        return {dlls[n].name: dlls[n] for n in imports if n in dlls}
-    if sys.platform == "darwin":
-        out = subprocess.run(["otool", "-L", binary], capture_output=True, text=True, check=True).stdout
-        names = [line.strip().split(" (")[0] for line in out.splitlines()[1:]]
-        return {n.removeprefix("@rpath/"): (prefix / "lib" / n.removeprefix("@rpath/")).resolve() for n in names if n.startswith("@rpath/")}
-    out = subprocess.run(["ldd", binary], capture_output=True, text=True, check=True).stdout
-    libs = {}
-    for line in out.splitlines():
-        name, _, rest = line.strip().partition(" => ")
-        path = Path(rest.split(" (")[0]).resolve() if rest.startswith("/") else None
-        if path and path.is_relative_to(prefix):
-            libs[name] = path
-    return libs
-
-
-def conda_tools() -> None:
-    mamba = shutil.which("micromamba") or sys.exit("micromamba not found on PATH (`nix develop` provides it)")
-    work = CACHE / ("conda-" + hashlib.sha1(json.dumps([CONDA_SPECS, FAISS_CPU]).encode()).hexdigest()[:8])
-    prefix = work / "env"
-    if not (prefix / "conda-meta").exists():
-        env = dict(os.environ, MAMBA_ROOT_PREFIX=str(work / "root"))
-        run(mamba, "create", "-y", "-p", prefix, "-c", "conda-forge", *CONDA_SPECS, env=env)
-        run(mamba, "install", "-y", "-p", prefix, "-c", "conda-forge", "--no-deps", FAISS_CPU, env=env)
-    prefix = prefix.resolve()
-
-    # Copy the binaries and every library they load, following symlinks so the bundle has none.
-    # Windows has no rpath and finds DLLs beside the program, so its libraries go into bin/.
-    libs = OUT / ("bin" if WINDOWS else "lib")
-    (OUT / "bin").mkdir(parents=True)
-    libs.mkdir(exist_ok=True)
-    todo = [prefix / ("Library/bin" if WINDOWS else "bin") / f"{b}{EXE}" for b in CONDA_BINS]
-    shipped = set()  # copied files as paths in the prefix, to find the packages that own them
-    for path in todo:
-        shutil.copy2(path, OUT / "bin" / path.name)
-        shipped.add(path.relative_to(prefix).as_posix())
-    while todo:
-        for name, real in linked_libs(todo.pop(), prefix).items():
-            if not (libs / name).exists():
-                shipped.add(real.relative_to(prefix).as_posix())
-                shutil.copy2(real, libs / name)
-                todo.append(real)
-
-    # Licenses of every package that owns a shipped file.
-    index = []
-    for meta in sorted((prefix / "conda-meta").glob("*.json")):
-        pkg = json.loads(meta.read_text())
-        if shipped.isdisjoint(pkg.get("files", [])):
-            continue
-        index.append(f"{pkg['name']} {pkg['version']}: {pkg.get('license', 'unknown')}")
-        licenses = Path(pkg["extracted_package_dir"]) / "info" / "licenses"
-        if licenses.is_dir():
-            shutil.copytree(licenses, OUT / "THIRD_PARTY_LICENSES" / pkg["name"])
-    index.append("Sources: https://conda-forge.org (feedstocks at https://github.com/conda-forge/<name>-feedstock)")
-    (OUT / "THIRD_PARTY_LICENSES").mkdir(exist_ok=True)
-    (OUT / "THIRD_PARTY_LICENSES" / "INDEX.txt").write_text("\n".join(index) + "\n")
-
-
-def brush() -> None:
-    root = CACHE / f"brush-{BRUSH_REV[:12]}"
-    src, exe, crates = root / "src", root / "bin" / f"brush-cli{EXE}", root / "crates.txt"
-    if not src.exists():
-        with urllib.request.urlopen(f"{BRUSH_REPO}/archive/{BRUSH_REV}.tar.gz") as r, tarfile.open(fileobj=r, mode="r|gz") as tar:
-            tar.extractall(root, filter="data")
-        (root / f"brush-{BRUSH_REV}").rename(src)
-    if not exe.exists():
-        env = dict(os.environ, CARGO_PROFILE_RELEASE_STRIP="true")
-        run("cargo", "install", "--locked", "--path", src / "apps" / "brush-cli", "--root", root, env=env)
-    if not crates.exists():
-        notices(src / "apps" / "brush-cli" / "Cargo.toml", crates)
-    shutil.copy2(exe, OUT / "bin" / exe.name)
-    dest = OUT / "THIRD_PARTY_LICENSES" / "brush"
-    dest.mkdir(parents=True)
-    shutil.copy2(src / "LICENSE", dest / "LICENSE")
-    shutil.copy2(crates, dest / "crates.txt")
+def fetch(name: str, url: str, sha256: str, member: str) -> Path:
+    """The program `member` from the pinned download at `url`, cached by its hash."""
+    exe = CACHE / f"{name}-{sha256[:12]}" / Path(member).name
+    if exe.exists():
+        return exe
+    data = download(url)
+    if hashlib.sha256(data).hexdigest() != sha256:
+        sys.exit(f"{url} doesn't match its pinned sha256")
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    if url.endswith(".dmg"):
+        with tempfile.TemporaryDirectory() as tmp:
+            dmg, mount = Path(tmp) / "download.dmg", Path(tmp) / "mount"
+            dmg.write_bytes(data)
+            run("hdiutil", "attach", "-quiet", "-nobrowse", "-readonly", "-mountpoint", mount, dmg)
+            try:
+                shutil.copy2(mount / member, exe)
+            finally:
+                run("hdiutil", "detach", "-quiet", mount)
+    elif url.endswith(".zip"):
+        exe.write_bytes(zipfile.ZipFile(io.BytesIO(data)).read(member))
+    else:
+        exe.write_bytes(tarfile.open(fileobj=io.BytesIO(data)).extractfile(member).read())
+    exe.chmod(0o755)
+    return exe
 
 
 def notices(manifest: Path, out: Path) -> None:
     """Licenses of the Rust crates compiled into `manifest`'s program, written to `out` by cargo-about."""
     about = ROOT / "scripts"
     run("cargo", "about", "generate", "-c", about / "about.toml", "--manifest-path", manifest, about / "about.hbs", "-o", out)
-
-
-def smoke_test() -> None:
-    for name, arg in [("ffmpeg", "-version"), ("ffprobe", "-version"), ("colmap", "help"), ("brush-cli", "--version")]:
-        out = subprocess.run([OUT / "bin" / f"{name}{EXE}", arg], capture_output=True, text=True)
-        first = (out.stdout or out.stderr).splitlines()[:1]
-        print(f"{name}: exit {out.returncode}: {first[0] if first else '(no output)'}")
-        if out.returncode != 0:
-            if WINDOWS:
-                for line in unloadable(OUT / "bin"):
-                    print("  can't load", line)
-            sys.exit(f"{name} does not run from the bundle")
-
-
-def unloadable(folder: Path) -> list[str]:
-    """What Windows can't load: DLLs in `folder`, and the imports its files find elsewhere (in Windows).
-
-    A failed start only says some DLL is missing (0xC0000135); loading each piece names it.
-    """
-    import ctypes
-
-    failed = []
-    for path in sorted(folder.iterdir()):
-        if path.suffix.lower() not in (".dll", ".exe"):
-            continue
-        own = [str(path)] if path.suffix.lower() == ".dll" else []
-        for name in own + [n for n in pe_imports(path) if not (folder / n).exists()]:
-            try:
-                ctypes.WinDLL(name)  # a full path finds its own imports beside it
-            except OSError as e:
-                failed.append(f"{path.name}: {Path(name).name}: {e}")
-    return failed
 
 
 def main() -> None:
@@ -212,10 +116,26 @@ def main() -> None:
     if stamp.exists() and stamp.read_text() == STAMP:
         print("tools up to date")
         return
+    tools = TOOLS.get((sys.platform, platform.machine())) or sys.exit(
+        f"No tools for {sys.platform} {platform.machine()}: Spirula ships for macOS arm64, Linux x86_64 and Windows x64"
+    )
     shutil.rmtree(OUT, ignore_errors=True)
-    conda_tools()
-    brush()
-    smoke_test()
+    (OUT / "bin").mkdir(parents=True)
+    for name, pin in tools.items():
+        exe = fetch(name, *pin)
+        shutil.copy2(exe, OUT / "bin" / exe.name)
+        texts, source = NOTICES[name]
+        dest = OUT / "THIRD_PARTY_LICENSES" / name
+        dest.mkdir(parents=True)
+        for url in texts:
+            (dest / url.rsplit("/", 1)[1]).write_bytes(download(url))
+        (dest / "SOURCE.txt").write_text(source + "\n")
+    for name, arg in [("ffmpeg", "-version"), ("spirula", "--help")]:
+        out = subprocess.run([OUT / "bin" / f"{name}{'.exe' if sys.platform == 'win32' else ''}", arg], capture_output=True, text=True)
+        first = (out.stdout or out.stderr).splitlines()[:1]
+        print(f"{name}: exit {out.returncode}: {first[0] if first else '(no output)'}")
+        if out.returncode != 0:
+            sys.exit(f"{name} does not run from the bundle")
     stamp.write_text(STAMP)
     size = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file())
     print(f"tools ready: {size / 2**20:.0f} MB in {OUT}")

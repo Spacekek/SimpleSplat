@@ -16,11 +16,11 @@ jobs:
       matrix:
         include:
           - os: macos-latest # Apple Silicon
-            mamba: osx-arm64
-          - os: ubuntu-22.04 # the oldest glibc the .deb and .rpm then run on
-            mamba: linux-64
+            name: macos
+          - os: ubuntu-24.04 # Spirula needs glibc 2.38, so older systems gain nothing
+            name: linux
           - os: windows-latest
-            mamba: win-64
+            name: windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -29,21 +29,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: test "$GITHUB_REF_NAME" = "v$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
-
-      # Brush is the slowest part of the tools to build (47 min on Windows), and changes only with its
-      # pinned commit. Saved even when a later step fails, so a failed run doesn't build it again.
-      - uses: actions/cache/restore@v4
-        id: brush
-        with:
-          path: .cache/brush-*
-          key: brush-${{ runner.os }}-${{ hashFiles('scripts/bundle_tools.py') }}
-          restore-keys: brush-${{ runner.os }}-
-
-      # The conda env, the app's build and the .deb and .rpm (each with a copy of the tools) don't fit
-      # in the runner's free space, even with Brush cached. Deleting takes about 4 minutes.
-      - name: Free disk space (Linux)
-        if: runner.os == 'Linux'
-        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'
@@ -56,7 +41,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable # Brush needs Rust 1.95 or newer
+      - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -67,27 +52,15 @@ jobs:
         with:
           tool: cargo-about
 
-      - name: micromamba
-        shell: bash
-        run: |
-          mkdir -p ~/micromamba && cd ~/micromamba
-          curl -fsSL "https://micro.mamba.pm/api/micromamba/${{ matrix.mamba }}/latest" | tar -xj
-          if [ "$RUNNER_OS" = Windows ]; then cygpath -w "$PWD/Library/bin"; else echo "$PWD/bin"; fi >> "$GITHUB_PATH"
-
       - run: npm ci
-      # Builds the tools (scripts/bundle_tools.py), the frontend and the installers.
+      # Downloads the tools (scripts/bundle_tools.py), builds the frontend and the installers.
       - run: npx tauri build
-      - uses: actions/cache/save@v4
-        if: always() && steps.brush.outputs.cache-hit != 'true' && hashFiles('.cache/brush-*/bin/*') != ''
-        with:
-          path: .cache/brush-*
-          key: ${{ steps.brush.outputs.cache-primary-key }}
       # After the build: compiling needs the tools folder and the frontend to exist.
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - uses: actions/upload-artifact@v4
         with:
-          name: simplesplat-${{ matrix.mamba }}
+          name: simplesplat-${{ matrix.name }}
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/deb/*.deb

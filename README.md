@@ -7,13 +7,13 @@ Turn a phone video or a folder of photos into a Gaussian splat with one button. 
 ```sh
 nix develop
 npm install
-npm run tauri dev     # first run builds src-tauri/tools (conda + Brush), about 10 minutes
+npm run tauri dev     # first run downloads src-tauri/tools (ffmpeg + Spirula), about a minute
 npm run tauri build   # installers in src-tauri/target/release/bundle
 ```
 
-`npm run tools` builds the bundled tools on their own (ffmpeg, COLMAP, Brush into `src-tauri/tools`). It skips the work when nothing changed.
+`npm run tools` fetches the bundled tools on their own: pinned, checksummed ffmpeg and Spirula binaries into `src-tauri/tools`. It skips the work when nothing changed.
 
-Without Nix you need Rust 1.95 or newer, Node, Python 3, micromamba and (for release builds, which write the Rust crates' license notices) cargo-about on `PATH`, and on Linux the [Tauri system packages](https://tauri.app/start/prerequisites/). Release builds for other people's machines run that way, outside `nix develop`, because binaries built inside the Nix shell can link against `/nix/store` paths. On Windows the same commands work from a normal terminal.
+Without Nix you need Rust, Node, Python 3 and (for release builds, which write the Rust crates' license notices) cargo-about on `PATH`, and on Linux the [Tauri system packages](https://tauri.app/start/prerequisites/). Release builds for other people's machines run that way, outside `nix develop`, because binaries built inside the Nix shell can link against `/nix/store` paths. On Windows the same commands work from a normal terminal.
 
 CI (`.github/workflows/build.yml`) builds each pushed `v*` tag, or any branch from **Run workflow** in the Actions tab, on macOS (Apple Silicon: `.dmg`), Linux (x64: `.deb`, `.rpm`) and Windows (x64: NSIS installer), and keeps the installers as build artifacts.
 
@@ -22,11 +22,11 @@ To release: bump `version` in `src-tauri/Cargo.toml` (the only place it is set),
 ## Nix
 
 ```sh
-nix build            # the app, against COLMAP, ffmpeg and Brush built from nixpkgs (x86_64-linux, aarch64-darwin)
+nix build            # the app, with ffmpeg from nixpkgs and Spirula's release binary (x86_64-linux)
 nix run . -- --help  # the CLI
 ```
 
-The package doesn't use the conda bundle: the app is built with the folder of those tools (`SIMPLESPLAT_TOOLS_DIR`) compiled in. `Brush` here is our own derivation; nixpkgs' `brush` is an unrelated shell.
+The package doesn't use the downloaded bundle: the app is built with the folder of those tools (`SIMPLESPLAT_TOOLS_DIR`) compiled in. There is no macOS package; Mac users have the `.dmg`.
 
 ## Command line
 
@@ -47,4 +47,4 @@ Where the binary is:
 
 ## License
 
-Apache-2.0. Bundled tools keep their own licenses, collected in `tools/THIRD_PARTY_LICENSES`, together with those of the Rust crates compiled into the app and into Brush.
+Apache-2.0. Bundled tools keep their own licenses, collected in `tools/THIRD_PARTY_LICENSES` (ffmpeg and Spirula are GPL, and run as separate programs), together with those of the Rust crates compiled into the app.

@@ -1,8 +1,13 @@
-//! Input (video or photo folder) -> frames -> COLMAP -> Brush -> scene.ply, in `<name>_splat/`.
+//! Input (video or photo folder) -> frames -> Spirula SfM -> Spirula training -> scene.ply, in
+//! `<name>_splat/`.
 //!
 //! Each stage owns one folder plus a `.<folder>.stamp` naming everything that produced it. A
 //! matching stamp skips the stage; a stamp includes the previous stage's, so changing an early
-//! setting re-runs everything after it.
+//! setting re-runs everything after it. Each stage is a module with a `run` entry point.
+
+mod frames;
+mod sfm;
+mod train;
 
 use serde::Serialize;
 use std::fs::{self, File};
@@ -15,12 +20,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub const STAGES: usize = 3;
 pub const STOPPED: &str = "Stopped.";
-/// Video candidates per frame kept: each kept frame is the sharpest of its group.
-const CANDIDATES: usize = 3;
-/// Seconds per unit of `train_work` on an Apple M5 (the spike's 30k run took 38 minutes).
-const BRUSH_SECS_PER_WORK: f64 = 38.0 * 60.0 / 165_000.0;
-const PHOTO_EXTS: [&str; 8] = ["jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff"];
-const UNREADABLE: &str = "Couldn't read the input. Use a common video format (mp4, mov) or a folder of photos (jpg, png, heic).";
 
 pub struct Settings {
     /// Frames taken from a video, or the most photos used from a folder.
@@ -31,16 +30,19 @@ pub struct Settings {
     pub export_every: Option<u32>,
     /// None: one camera for video, one per photo otherwise.
     pub single_camera: Option<bool>,
-    pub incremental_mapper: bool,
+    /// Spirula's SfM preset: low, medium or high (image size, features, pairs).
+    pub sfm_quality: &'static str,
     pub keep_intermediates: bool,
 }
 
 impl Settings {
     pub fn detail(name: &str) -> Option<Self> {
-        let (frames, steps) = match name {
-            "low" => (100, 5_000),
-            "medium" => (150, 15_000),
-            "high" => (300, 30_000),
+        let (frames, steps, sfm_quality) = match name {
+            // Spirula adds at most about 10% splats per 100 steps until 2,500 before the end:
+            // on the test video 5k steps ended at 58k splats, 10k at 670k (Brush's 5k: about 240k).
+            "low" => (100, 10_000, "low"),
+            "medium" => (150, 15_000, "medium"),
+            "high" => (300, 30_000, "high"),
             _ => return None,
         };
         Some(Self {
@@ -49,7 +51,7 @@ impl Settings {
             max_size: 1600,
             export_every: None,
             single_camera: None,
-            incremental_mapper: false,
+            sfm_quality,
             keep_intermediates: true,
         })
     }
@@ -250,7 +252,7 @@ impl Job<'_> {
         let files = if video {
             vec![input.to_path_buf()]
         } else {
-            photos(input, s.frames)?
+            frames::photos(input, s.frames)?
         };
         let n = if video {
             s.frames as usize
@@ -260,11 +262,9 @@ impl Job<'_> {
         let out = &mut Report::new(
             emit,
             [
-                n as f64 * if video { 0.025 } else { 0.15 },
-                colmap_estimates(n, video, s.incremental_mapper)
-                    .iter()
-                    .sum(),
-                BRUSH_SECS_PER_WORK * train_work(s.steps),
+                frames::estimate(n, video),
+                sfm::estimate(n, s.sfm_quality),
+                train::estimate(s.steps),
             ],
         );
         let frames_key = format!(
@@ -279,30 +279,30 @@ impl Job<'_> {
             "Preparing photos"
         };
         self.stage(1, label, "images", &frames_key, out, |job, dir, out| {
-            job.frames(&files, video, s, dir, out)
+            frames::run(job, &files, video, s, dir, out)
         })?;
 
-        let colmap_key = format!(
-            "{frames_key} | colmap video={video} single_camera={single_camera} incremental={} align=manhattan",
-            s.incremental_mapper
+        let sfm_key = format!(
+            "{frames_key} | spirula sfm video={video} single_camera={single_camera} quality={} up=-y",
+            s.sfm_quality
         );
         self.stage(
             2,
             "Finding camera positions",
             "sparse",
-            &colmap_key,
+            &sfm_key,
             out,
-            |job, dir, out| job.colmap(video, single_camera, s.incremental_mapper, dir, out),
+            |job, dir, out| sfm::run(job, video, single_camera, s.sfm_quality, dir, out),
         )?;
 
-        let train_key = format!("{colmap_key} | steps={}", s.steps);
+        let train_key = format!("{sfm_key} | spirula train steps={}", s.steps);
         self.stage(
             3,
             "Training the splat",
             "exports",
             &train_key,
             out,
-            |job, dir, out| job.train(s, dir, out),
+            |job, dir, out| train::run(job, s, dir, out),
         )?;
 
         if self.control.stopped() {
@@ -350,344 +350,6 @@ impl Job<'_> {
         Ok(())
     }
 
-    /// `files` is the video, or the photos to use.
-    fn frames(
-        &mut self,
-        files: &[PathBuf],
-        video: bool,
-        s: &Settings,
-        dir: &Path,
-        out: &mut Report<'_>,
-    ) -> Result<(), String> {
-        // Also to SDR BT.709, which leaves SDR as it is: phone HDR video (HLG or PQ in BT.2020)
-        // otherwise comes out washed out.
-        let scale = format!(
-            "scale=w='min({m},iw)':h='min({m},ih)':force_original_aspect_ratio=decrease\
-             :out_primaries=bt709:out_transfer=bt709:out_color_matrix=bt709",
-            m = s.max_size
-        );
-        let unreadable = |_| UNREADABLE.to_string();
-        if video {
-            let input = &files[0];
-            let duration = self.capture(
-                self.cmd("ffprobe")
-                    .args([
-                        "-v",
-                        "error",
-                        "-show_entries",
-                        "format=duration",
-                        "-of",
-                        "csv=p=0",
-                    ])
-                    .arg(input),
-            )?;
-            let duration: f64 = duration
-                .trim()
-                .parse()
-                .map_err(|_| UNREADABLE.to_string())?;
-            // Candidates at CANDIDATES times the frame rate (never above the source's: the fps filter
-            // would repeat frames), each scored by blurdetect; the sharpest of each group is kept.
-            let candidates = CANDIDATES * s.frames as usize;
-            let mut ffmpeg = self.cmd("ffmpeg");
-            ffmpeg
-                .args(["-hide_banner", "-loglevel", "error", "-i"])
-                .arg(input);
-            ffmpeg
-                .args([
-                    "-vf",
-                    &format!(
-                        "fps='min(source_fps,{})',{scale},blurdetect,metadata=print:key=lavfi.blur:file='pipe\\:1'",
-                        candidates as f64 / duration
-                    ),
-                    "-q:v",
-                    "2",
-                ])
-                .arg(dir.join("candidate-%05d.jpg"));
-            let mut blur = Vec::new();
-            self.run(ffmpeg, &mut |line| {
-                if let Some(value) = line.strip_prefix("lavfi.blur=") {
-                    blur.push(value.trim().parse().unwrap_or(f64::MAX));
-                    let done = blur.len() as f64 / candidates as f64;
-                    out.progress(done, "Picking the sharpest frames");
-                }
-            })
-            .map_err(unreadable)?;
-            let candidate = |i: usize| dir.join(format!("candidate-{:05}.jpg", i + 1));
-            let count = (0..).take_while(|&i| candidate(i).exists()).count();
-            if blur.len() != count {
-                blur = vec![0.0; count]; // no scores: evenly spaced frames
-            }
-            let keep = sharpest(&blur, s.frames as usize);
-            let mut kept = 0;
-            for i in 0..count {
-                if keep.get(kept) == Some(&i) {
-                    kept += 1;
-                    fs::rename(candidate(i), dir.join(format!("{kept:04}.jpg")))
-                } else {
-                    fs::remove_file(candidate(i))
-                }
-                .map_err(|e| e.to_string())?;
-            }
-            return Ok(());
-        }
-        for (i, photo) in files.iter().enumerate() {
-            out.progress(
-                i as f64 / files.len() as f64,
-                &format!("Photo {} of {}", i + 1, files.len()),
-            );
-            // Tiled HEIC is stitched by an internal filter graph that can't be combined with -vf.
-            let heic = photo.extension().is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif")
-            });
-            let decoded = dir.join("decoded.png");
-            if heic {
-                let mut decode = self.cmd("ffmpeg");
-                decode
-                    .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-                    .arg(photo)
-                    .arg(&decoded);
-                self.run(decode, &mut |_| {}).map_err(unreadable)?;
-            }
-            let mut ffmpeg = self.cmd("ffmpeg");
-            ffmpeg
-                .args(["-hide_banner", "-loglevel", "error", "-i"])
-                .arg(if heic { &decoded } else { photo });
-            ffmpeg
-                .args(["-vf", &scale, "-q:v", "2"])
-                .arg(dir.join(format!("{:04}.jpg", i + 1)));
-            self.run(ffmpeg, &mut |_| {}).map_err(unreadable)?;
-        }
-        let _ = fs::remove_file(dir.join("decoded.png"));
-        Ok(())
-    }
-
-    fn colmap(
-        &mut self,
-        video: bool,
-        single_camera: bool,
-        incremental: bool,
-        sparse: &Path,
-        out: &mut Report<'_>,
-    ) -> Result<(), String> {
-        let (images, database, mapped) = (
-            self.project.join("images"),
-            self.project.join("database.db"),
-            self.project.join("mapped"),
-        );
-        let _ = fs::remove_file(&database);
-        let _ = fs::remove_dir_all(&mapped);
-        let _ = fs::remove_file(self.project.join("view.json")); // belongs to the old model
-        let total = fs::read_dir(&images).map(|d| d.count()).unwrap_or(0);
-        // Each step's share of the stage, by its estimated time.
-        let parts = colmap_estimates(total, video, incremental);
-        let share = |step: usize, done: f64| {
-            (parts[..step].iter().sum::<f64>() + parts[step] * done) / parts.iter().sum::<f64>()
-        };
-        let mut features = self.cmd("colmap");
-        features
-            .args(["feature_extractor", "--database_path"])
-            .arg(&database)
-            .arg("--image_path")
-            .arg(&images);
-        features.args([
-            "--ImageReader.single_camera",
-            if single_camera { "1" } else { "0" },
-            "--FeatureExtraction.use_gpu",
-            "0",
-        ]);
-        self.run(features, &mut |line| {
-            if let Some(done) = counter(line) {
-                out.progress(share(0, done), "Finding features");
-            }
-        })
-        .map_err(|_| "COLMAP failed while finding features.".to_string())?;
-
-        // Video frames are in order, so neighbours suffice (13x faster in the spike); photos are not.
-        let mut matcher = self.cmd("colmap");
-        matcher.arg(if video {
-            "sequential_matcher"
-        } else {
-            "exhaustive_matcher"
-        });
-        matcher
-            .arg("--database_path")
-            .arg(&database)
-            .args(["--FeatureMatching.use_gpu", "0"]);
-        self.run(matcher, &mut |line| {
-            if let Some(done) = counter(line) {
-                out.progress(share(1, done), "Matching features");
-            }
-        })
-        .map_err(|_| "COLMAP failed while matching features.".to_string())?;
-
-        fs::create_dir_all(&mapped).map_err(|e| e.to_string())?;
-        let mut mapper = self.cmd("colmap");
-        mapper
-            .arg(if incremental {
-                "mapper"
-            } else {
-                "global_mapper"
-            })
-            .arg("--database_path")
-            .arg(&database)
-            .arg("--image_path")
-            .arg(&images)
-            .arg("--output_path")
-            .arg(&mapped);
-        if !incremental {
-            mapper.args([
-                "--GlobalMapper.gp_use_gpu",
-                "0",
-                "--GlobalMapper.ba_ceres_use_gpu",
-                "0",
-            ]);
-        }
-        let lost = "Couldn't work out where the camera was. Film slower, keep more overlap between shots, and avoid plain or shiny surfaces.";
-        // The mapper has no counter, so its progress is time against the estimate.
-        let mapping = Instant::now();
-        self.run(mapper, &mut |_| {
-            let done = (mapping.elapsed().as_secs_f64() / parts[2]).min(0.95);
-            out.progress(share(2, done), "Building the 3D model");
-        })
-        .map_err(|_| lost.to_string())?;
-        if !mapped.join("0").exists() {
-            return Err(lost.into());
-        }
-
-        // Upright: the viewer has no rotation control, so gravity is fixed in the data. Straight
-        // lines (Manhattan world) found real vertical much better than the average camera tilt in
-        // the spike (median roll 3.5 vs 7.7 degrees); the latter is the fallback for line-poor scenes.
-        let model = sparse.join("0");
-        fs::create_dir_all(&model).map_err(|e| e.to_string())?;
-        let mut aligned = Err("COLMAP failed while straightening the scene.".to_string());
-        for method in ["MANHATTAN-WORLD", "IMAGE-ORIENTATION"] {
-            let mut align = self.cmd("colmap");
-            align
-                .args(["model_orientation_aligner", "--image_path"])
-                .arg(&images)
-                .arg("--input_path")
-                .arg(mapped.join("0"));
-            align
-                .arg("--output_path")
-                .arg(&model)
-                .args(["--method", method]);
-            if self.run(align, &mut |_| {}).is_ok() {
-                aligned = Ok(());
-                break;
-            }
-        }
-        aligned?;
-        // Nothing reads these again: a re-run of this stage starts over, and Brush needs only the model.
-        let _ = fs::remove_dir_all(&mapped);
-        let _ = fs::remove_file(&database);
-
-        let analysis = self.capture(
-            self.cmd("colmap")
-                .arg("model_analyzer")
-                .arg("--path")
-                .arg(&model),
-        )?;
-        if let Some(placed) = analysis.lines().find_map(|l| {
-            l.split("Registered images: ")
-                .nth(1)?
-                .trim()
-                .parse::<usize>()
-                .ok()
-        }) {
-            out.event(Event::Info {
-                text: format!("Placed {placed} of {total} frames."),
-            });
-            if placed * 2 < total {
-                out.event(Event::Info {
-                    text: "Many frames couldn't be placed, so the result may have holes.".into(),
-                });
-            }
-        }
-        self.write_view(&model);
-        Ok(())
-    }
-
-    /// Writes view.json: the first frame's camera in viewer coordinates, aimed at the scene.
-    fn write_view(&mut self, model: &Path) {
-        let txt = std::env::temp_dir().join(format!("simplesplat-{}-txt", std::process::id()));
-        let _ = fs::create_dir_all(&txt);
-        let mut convert = self.cmd("colmap");
-        convert
-            .args(["model_converter", "--output_type", "TXT", "--input_path"])
-            .arg(model)
-            .arg("--output_path")
-            .arg(&txt);
-        let read = |name: &str| fs::read_to_string(txt.join(name)).unwrap_or_default();
-        let view = self.capture(&mut convert).ok().and_then(|_| {
-            first_frame_view(
-                &read("cameras.txt"),
-                &read("images.txt"),
-                &read("points3D.txt"),
-            )
-        });
-        let _ = fs::remove_dir_all(&txt);
-        if let Some(view) = view {
-            let _ = fs::write(self.project.join("view.json"), view);
-        }
-    }
-
-    fn train(&mut self, s: &Settings, exports: &Path, out: &mut Report<'_>) -> Result<(), String> {
-        // Brush loads any .ply it finds in the project as starting splats; a previous result must go.
-        let scene = self.project.join("scene.ply");
-        let _ = fs::remove_file(&scene);
-        let mut brush = self.cmd("brush-cli");
-        brush.arg(&self.project).args([
-            "--total-train-iters",
-            &s.steps.to_string(),
-            "--export-every",
-            &s.export_every.unwrap_or(s.steps / 5).to_string(),
-        ]);
-        brush
-            .arg("--export-path")
-            .arg(format!("{}/", exports.display()))
-            .env("RUST_LOG", "info");
-        let total = s.steps;
-        let mut previewed = None;
-        let result = self.run(brush, &mut |line| {
-            let Some(iter) = refine_iter(line) else {
-                return;
-            };
-            // Brush logs a step with each refine (every 200 steps) and stops refining at 95%.
-            let what = if iter + 200 > total / 20 * 19 {
-                "Finishing…".into()
-            } else {
-                format!("{} of {} steps", grouped(iter), grouped(total))
-            };
-            out.progress(train_work(iter) / train_work(total), &what);
-            // Brush writes exports without logging it; one untouched for 2 s is complete.
-            if let Some(path) = newest_ply(exports, Duration::from_secs(2))
-                && previewed.as_ref() != Some(&path)
-            {
-                previewed = Some(path.clone());
-                out.event(Event::Preview { path });
-            }
-        });
-        let stopped = self.control.stopped();
-        if result.is_err() && !stopped {
-            return Err(brush_hint(&self.log_tail()).into());
-        }
-        // Brush doesn't write exports atomically, so a stopped run keeps the last one that settled.
-        let newest = (if stopped {
-            previewed
-        } else {
-            newest_ply(exports, Duration::ZERO)
-        })
-        .ok_or(if stopped {
-            STOPPED
-        } else {
-            "Training finished without writing a scene."
-        })?;
-        fs::rename(newest, &scene).map_err(|e| e.to_string())?;
-        // The other exports were only previews.
-        let _ = fs::remove_dir_all(exports);
-        Ok(())
-    }
-
     /// A bundled tool if present, otherwise the bare name for a PATH lookup.
     fn cmd(&self, name: &str) -> Command {
         let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
@@ -704,8 +366,7 @@ impl Job<'_> {
         cmd
     }
 
-    /// Runs a command with its stdout and stderr lines appended to log.txt and passed to `on_line`
-    /// (COLMAP reports on stderr, the others on stdout).
+    /// Runs a command with its stdout and stderr lines appended to log.txt and passed to `on_line`.
     fn run(&mut self, mut cmd: Command, on_line: &mut dyn FnMut(&str)) -> Result<(), String> {
         if self.control.stopped() {
             return Err(STOPPED.into());
@@ -751,7 +412,7 @@ impl Job<'_> {
         }
     }
 
-    /// Runs a command and returns stdout followed by stderr (COLMAP reports on stderr).
+    /// Runs a command and returns stdout followed by stderr.
     fn capture(&mut self, cmd: &mut Command) -> Result<String, String> {
         let _ = writeln!(self.log, "\n$ {cmd:?}");
         let out = cmd
@@ -803,28 +464,6 @@ fn project_dir(input: &Path, out: Option<&Path>) -> Result<PathBuf, String> {
     }
 }
 
-/// Up to `max` photos from `folder`, evenly spread over the name order. Exhaustive matching grows
-/// with the square of the count, so this bounds COLMAP's time like the frame count does for video.
-fn photos(folder: &Path, max: u32) -> Result<Vec<PathBuf>, String> {
-    let mut photos: Vec<PathBuf> = fs::read_dir(folder)
-        .map_err(|e| format!("Can't read {}: {e}", folder.display()))?
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .filter(|path| {
-            path.extension().is_some_and(|ext| {
-                PHOTO_EXTS.contains(&ext.to_string_lossy().to_lowercase().as_str())
-            })
-        })
-        .collect();
-    photos.sort();
-    if photos.is_empty() {
-        return Err("No photos found in this folder (jpg, png, heic, webp, tif).".into());
-    }
-    let n = photos.len().min(max as usize);
-    Ok((0..n)
-        .map(|i| photos[i * photos.len() / n].clone())
-        .collect())
-}
-
 /// Total size and newest modification of `files`, so a re-recorded video or a changed photo isn't
 /// mistaken for the input a stage was made from.
 fn fingerprint(files: &[PathBuf]) -> String {
@@ -840,19 +479,6 @@ fn fingerprint(files: &[PathBuf]) -> String {
     format!("bytes={bytes} modified={newest}")
 }
 
-/// Newest .ply in `dir` that has not been modified for at least `settled`.
-fn newest_ply(dir: &Path, settled: Duration) -> Option<PathBuf> {
-    let now = SystemTime::now();
-    fs::read_dir(dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|x| x == "ply"))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .filter(|(modified, _)| now.duration_since(*modified).unwrap_or_default() >= settled)
-        .max()
-        .map(|(_, path)| path)
-}
-
 /// Sends `stream`'s lines to `sender` from a thread of their own. Invalid UTF-8 doesn't end the
 /// reading, which would leave the tool blocked on a full pipe.
 fn forward_lines(stream: impl Read + Send + 'static, sender: mpsc::Sender<String>) {
@@ -864,68 +490,6 @@ fn forward_lines(stream: impl Read + Send + 'static, sender: mpsc::Sender<String
     });
 }
 
-/// Index of the sharpest (least blurred) of each of `keep` equal runs of candidates, or all of
-/// them when there are no more than `keep`.
-fn sharpest(blur: &[f64], keep: usize) -> Vec<usize> {
-    let n = blur.len();
-    if n <= keep {
-        return (0..n).collect();
-    }
-    (0..keep)
-        .map(|i| {
-            (i * n / keep..(i + 1) * n / keep)
-                .min_by(|&a, &b| blur[a].total_cmp(&blur[b]))
-                .expect("runs are never empty when n > keep")
-        })
-        .collect()
-}
-
-/// COLMAP's progress counters: `[i/n]`, and `[i/n, j/m]` for exhaustive matching's blocks.
-fn counter(line: &str) -> Option<f64> {
-    let inside = line.rsplit_once('[')?.1.split_once(']')?.0;
-    let mut counts = inside.split(", ").map(|part| {
-        let (i, n) = part.split_once('/')?;
-        Some((i.trim().parse::<f64>().ok()?, n.trim().parse::<f64>().ok()?))
-    });
-    let (i, n) = counts.next()??;
-    Some(match counts.next() {
-        Some(Some((j, m))) => (i - 1.0 + j / m) / n,
-        _ => i / n,
-    })
-}
-
-/// Seconds on an Apple M5 for COLMAP's features, matching and model with `n` images, from the
-/// spike (exhaustive matching grows with the square of the count).
-fn colmap_estimates(n: usize, video: bool, incremental: bool) -> [f64; 3] {
-    let n = n as f64;
-    [
-        0.1 * n,
-        if video { 0.26 * n } else { 0.022 * n * n },
-        if incremental { 0.6 } else { 0.15 } * n + 3.0,
-    ]
-}
-
-/// Brush's training time for `steps`, in units of its first step. A step costs more as the splats
-/// grow, which they do until step 15,000, where a step costs 7 times the first. This matches the
-/// spike's 30k run (2.3, 7.5, 14.7, 22.6 and 38 minutes at 5k, 10k, 15k, 20k and 30k) within 7%.
-fn train_work(steps: u32) -> f64 {
-    let (steps, grown) = (steps as f64, (steps as f64).min(15_000.0));
-    steps + 6.0 * (grown * grown / 30_000.0 + steps - grown)
-}
-
-/// 4200 as "4,200".
-fn grouped(n: u32) -> String {
-    let digits = n.to_string();
-    let mut text = String::new();
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            text.push(',');
-        }
-        text.push(digit);
-    }
-    text
-}
-
 /// Time left in words.
 pub fn about(secs: u64) -> String {
     if secs < 60 {
@@ -935,91 +499,17 @@ pub fn about(secs: u64) -> String {
     }
 }
 
-/// Brush logs `Refine iter N, X splats.` every 200 steps; its progress bar is hidden when piped.
-fn refine_iter(line: &str) -> Option<u32> {
-    line.split("Refine iter ")
-        .nth(1)?
-        .split(',')
-        .next()?
-        .parse()
-        .ok()
-}
-
-// The no-GPU text is from a real failure (`No possible adapter available for backend`).
-// ponytail: the out-of-memory strings are guessed, refine from a real one
-fn brush_hint(log_tail: &str) -> &'static str {
+/// The plain-language error for a failed Spirula run, or `otherwise`.
+// ponytail: GPU failure strings are guessed (Vulkan's error names), refine from real failures
+fn spirula_hint(log_tail: &str, otherwise: &'static str) -> &'static str {
     let tail = log_tail.to_lowercase();
-    if tail.contains("out of memory") || tail.contains("outofmemory") {
+    if tail.contains("out of memory") || tail.contains("out_of_device_memory") {
         "The GPU ran out of memory. Try a lower Detail setting."
-    } else if tail.contains("adapter") {
-        "No supported GPU found. SimpleSplat needs Metal (macOS) or Vulkan (Linux)."
+    } else if tail.contains("incompatible_driver") || tail.contains("libvulkan") {
+        "No supported GPU found. SimpleSplat needs Vulkan (Linux, Windows) or Metal (macOS)."
     } else {
-        "Training failed."
+        otherwise
     }
-}
-
-/// The first frame's camera as SuperSplat viewer settings JSON, aimed at the median depth of
-/// the scene in front of it. The viewer flips PLY data 180 degrees around Z, so x and y negate.
-fn first_frame_view(cameras: &str, images: &str, points: &str) -> Option<String> {
-    let rows = |text: &str| -> Vec<Vec<String>> {
-        text.lines()
-            .filter(|l| !l.starts_with('#'))
-            .map(|l| l.split_whitespace().map(String::from).collect())
-            .collect()
-    };
-    let num = |s: &String| s.parse::<f64>().ok();
-    let image = rows(images)
-        .into_iter()
-        .filter(|r| r.len() == 10)
-        .min_by(|a, b| a[9].cmp(&b[9]))?;
-    let [w, x, y, z, tx, ty, tz] = std::array::from_fn(|i| num(&image[i + 1]).unwrap_or(0.0));
-    let r = [
-        [
-            1. - 2. * (y * y + z * z),
-            2. * (x * y - w * z),
-            2. * (x * z + w * y),
-        ],
-        [
-            2. * (x * y + w * z),
-            1. - 2. * (x * x + z * z),
-            2. * (y * z - w * x),
-        ],
-        [
-            2. * (x * z - w * y),
-            2. * (y * z + w * x),
-            1. - 2. * (x * x + y * y),
-        ],
-    ];
-    let t = [tx, ty, tz];
-    let center: [f64; 3] = std::array::from_fn(|c| -(0..3).map(|k| r[k][c] * t[k]).sum::<f64>());
-    let forward = r[2];
-
-    let mut depths: Vec<f64> = rows(points)
-        .iter()
-        .filter_map(|p| Some([num(p.get(1)?)?, num(p.get(2)?)?, num(p.get(3)?)?]))
-        .map(|p| (0..3).map(|i| (p[i] - center[i]) * forward[i]).sum::<f64>())
-        .filter(|d| *d > 0.)
-        .collect();
-    depths.sort_by(f64::total_cmp);
-    let depth = *depths.get(depths.len() / 2)?;
-
-    let camera = rows(cameras)
-        .into_iter()
-        .find(|c| c.first() == image.get(8))?;
-    let (height, params) = (num(camera.get(3)?)?, &camera[4..]);
-    let focal = if camera[1].starts_with("SIMPLE") || camera[1] == "RADIAL" {
-        num(params.first()?)?
-    } else {
-        num(params.get(1)?)?
-    };
-    let fov = (2. * (height / 2. / focal).atan()).to_degrees();
-    let flip = |v: [f64; 3]| format!("[{}, {}, {}]", -v[0], -v[1], v[2]);
-    let target = std::array::from_fn(|i| center[i] + forward[i] * depth);
-    Some(format!(
-        "{{\"position\": {}, \"target\": {}, \"fov\": {fov:.1}}}\n",
-        flip(center),
-        flip(target)
-    ))
 }
 
 /// Keeps the machine from sleeping while alive.
@@ -1125,63 +615,16 @@ mod tests {
     }
 
     #[test]
-    fn photos_are_sorted_and_evenly_thinned() {
-        let folder =
-            std::env::temp_dir().join(format!("simplesplat-photos-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&folder);
-        fs::create_dir_all(&folder).unwrap();
-        for name in ["e.jpg", "a.JPG", "c.heic", "b.png", "d.jpg", "notes.txt"] {
-            fs::write(folder.join(name), "").unwrap();
-        }
-        let names = |max| -> Vec<String> {
-            let photos = photos(&folder, max).unwrap();
-            photos
-                .iter()
-                .map(|p| p.file_name().unwrap().to_string_lossy().into())
-                .collect()
-        };
-        assert_eq!(names(10), ["a.JPG", "b.png", "c.heic", "d.jpg", "e.jpg"]);
-        assert_eq!(names(2), ["a.JPG", "c.heic"]);
-        fs::remove_dir_all(&folder).unwrap();
-    }
-
-    #[test]
-    fn brush_output_parsing() {
+    fn presets_and_error_hints() {
+        assert_eq!(Settings::detail("high").map(|s| s.steps), Some(30_000));
         assert_eq!(
-            refine_iter("[2026-10-15T07:51:15Z INFO  brush_cli] Refine iter 4201, 237593 splats."),
-            Some(4201)
-        );
-        assert_eq!(refine_iter("Training"), None);
-        assert_eq!(
-            brush_hint("wgpu error: Out of memory"),
+            spirula_hint(
+                "vkAllocateMemory: VK_ERROR_OUT_OF_DEVICE_MEMORY",
+                "Training failed."
+            ),
             "The GPU ran out of memory. Try a lower Detail setting."
         );
-        assert_eq!(Settings::detail("high").map(|s| s.steps), Some(30_000));
-    }
-
-    #[test]
-    fn progress_parsing_and_estimates() {
-        assert_eq!(sharpest(&[3., 1., 2., 5., 4., 6.], 2), [1, 4]);
-        assert_eq!(sharpest(&[1., 2.], 5), [0, 1]);
-        let colmap = "I20261015 14:07:38.4 0x1 feature_extraction.cc:120] Processed file [3/10]";
-        assert_eq!(counter(colmap), Some(0.3));
-        assert_eq!(
-            counter("pairing.cc:9] Processing block [2/4, 1/2]"),
-            Some(0.375)
-        );
-        assert_eq!(
-            counter("[2026-10-15T07:51:15Z INFO  brush_cli] Starting up"),
-            None
-        );
-        assert_eq!(counter("pose_graph.cc:51] Loaded 1345 edges"), None);
-        // Spike: 5k and 15k steps of a 30k run took 6% and 39% of its time.
-        let part = |steps| train_work(steps) / train_work(30_000);
-        assert!((part(5_000) - 0.06).abs() < 0.01, "{}", part(5_000));
-        assert!((part(15_000) - 0.39).abs() < 0.03, "{}", part(15_000));
-        assert_eq!(grouped(4200), "4,200");
-        assert_eq!(grouped(30_000), "30,000");
-        assert_eq!(grouped(1_000_000), "1,000,000");
-        assert_eq!(grouped(5), "5");
+        assert_eq!(spirula_hint("RESULT: FAILED", "Lost."), "Lost.");
     }
 
     #[test]
@@ -1190,7 +633,7 @@ mod tests {
         let mut emit = |event| sent.push(event);
         let mut out = Report::new(&mut emit, [10.0, 100.0, 890.0]);
         out.start(1, "frames", true);
-        out.start(2, "colmap", false);
+        out.start(2, "sfm", false);
         out.started -= Duration::from_secs(20); // twice as slow as estimated
         out.sent = None;
         out.progress(0.1, "");
@@ -1200,16 +643,5 @@ mod tests {
         // Skipped frames count for nothing: 10 of 990 estimated seconds done, 980 left at half speed.
         assert!((overall - 10.0 / 990.0).abs() < 1e-9);
         assert_eq!(*eta, 1960);
-    }
-
-    #[test]
-    fn first_frame_view_looks_from_frame_one_at_the_points() {
-        // Identity rotation at the origin looks down +z; points at depth 2, 4 and 6.
-        let cameras = "1 SIMPLE_RADIAL 720 1280 1000 360 640 0.01\n";
-        let images = "2 1 0 0 0 0 0 0 1 0002.jpg\n\n1 1 0 0 0 0 0 0 1 0001.jpg\n\n";
-        let points = "1 0 0 2 0 0 0 0\n2 0 0 4 0 0 0 0\n3 0 0 6 0 0 0 0\n4 0 0 -5 0 0 0 0\n";
-        let view = first_frame_view(cameras, images, points).unwrap();
-        assert!(view.contains("\"target\": [-0, -0, 4]"), "{view}");
-        assert!(view.contains("\"fov\": 65.2"), "{view}");
     }
 }

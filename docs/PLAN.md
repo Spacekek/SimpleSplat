@@ -9,15 +9,14 @@ input: one video OR one photo folder (auto-detected)
   -> ffmpeg       N frames (video: the sharpest of every 3 candidates by blurdetect, never above its frame rate)
                   or at most N photos evenly spread; long side <= 1600 px, SDR BT.709, upright, JPEG -> images/
                   (tiled HEIC: decode in one call, resize in a second; ffmpeg can't combine them)
-  -> colmap       feature_extractor --ImageReader.single_camera 1 (video) --FeatureExtraction.use_gpu 0
-  -> colmap       sequential_matcher (video) | exhaustive_matcher (photos)
-  -> colmap       global_mapper                                        -> sparse/0
-  -> colmap       model_orientation_aligner MANHATTAN-WORLD, falling back to IMAGE-ORIENTATION  -> up = -Y
-  -> brush        train, export 5 times                                -> exports/*.ply
+  -> spirula sfm  auto --data-type video|individual --quality low|medium|high (by Detail)
+                  --camera-mode single (video) | image (photos)                     -> sparse/0
+  -> (app)        turn the model from Spirula's z-up to up = -Y, write view.json
+  -> spirula      train 3dgs, a checkpoint every fifth of the steps                 -> exports/step-N.ckpt/splat.ply
   -> viewer       SuperSplat viewer (PlayCanvas), upright with no extra rotation
 ```
 
-Each step is a separate process with its own progress line in the UI and its own plain-language error message. No undistortion step: Brush reads COLMAP distortion models (`SIMPLE_RADIAL` here) and finds `sparse/0` in the project folder by itself.
+Each step is a separate process with its own progress line in the UI and its own plain-language error message. Each stage is a module in `src-tauri/src/pipeline/` (`frames.rs`, `sfm.rs`, `train.rs`) with a `run` entry point; `pipeline.rs` runs them in order and owns stamps, progress, time left and Stop. No undistortion step: Spirula's SfM fits an OpenCV lens model and its trainer reads it.
 
 ### Project folder
 
@@ -27,74 +26,95 @@ Written next to the input as `<name>_splat/` (falls back to the app data folder 
 <name>_splat/
   scene.ply      the result
   images/        normalized frames/photos
-  sparse/0/      COLMAP model, aligned upright
-  exports/       Brush exports while training (the last one becomes scene.ply, the rest are deleted)
+  sparse/0/      Spirula's model, turned upright (COLMAP binary format)
+  exports/       Spirula's checkpoints while training (the last splat becomes scene.ply, the rest is deleted)
+  view.json      the viewer's first camera: frame 1's pose, aimed at the scene
   log.txt        output of every tool
   .*.stamp       what produced each stage
 ```
 
-Brush loads any `.ply` in the folder it trains on as starting splats, so training deletes the old `scene.ply` and `exports/` first. Brush also writes a `Vertical axis` comment into its PLY; it is a guess (it said +Z for a scene that is -Y up) and the SuperSplat viewer ignores it.
+Spirula's SfM works in a temporary `sfm/` (features and matches), deleted once `sparse/0` is in place.
 
 ## Decisions
 
 ### Product
 - **Main screen is one button.** Drop an input, press Go.
-- **Settings screen.** Simple: Detail (Low/Medium/High) and output location. Advanced, collapsed at the bottom: frame count, max image size, training steps, preview export interval, single camera, mapper (global/incremental), keep intermediates, open log folder.
-- **Detail presets:** frames 100/150/300, training steps 5k/15k/30k. On an M5 with 150 frames that is about 2.5/15/38 minutes of training plus about 1 minute of COLMAP.
-- **Preview during training:** a still image, not a live viewer. An idle SuperSplat viewer keeps rendering at 60 fps and slowed training by 16% in the spike. For each export, load it, `captureFrame()`, `destroy()` the viewer and show the image (cost: a few seconds per preview). An "Explore" button opens the live viewer and says training is slower while it is open. Stop kills Brush and keeps the latest complete export.
-- **Progress:** each stage shows a bar and what it is busy with; the header shows the whole job and the time left. Sources: blurdetect's per-frame lines (video), the photo count, COLMAP's `[i/n]` counters (features, matching; `[i/n, j/m]` for exhaustive blocks), time against the estimate for the mapper (it has no counter), and Brush's `Refine iter N` lines, which stop at 95% ("Finishing…"). Each stage has an estimate from the M5 timings below; Brush's assumes a step costs more as splats grow, up to 7 times the first step's cost at 15k, which matches the 30k run within 7%. The speed seen so far scales what's left. The CLI draws one line in a terminal and prints a line per tenth of a stage otherwise.
+- **Settings screen.** Simple: Detail (Low/Medium/High) and output location. Advanced, collapsed at the bottom: frame count, max image size, training steps, preview export interval, single camera, keep intermediates, open log folder.
+- **Detail presets:** frames 100/150/300, training steps 10k/15k/30k, SfM quality low/medium/high. On an M5 with the 20 s test video, Low takes about 6 minutes in all (SfM 47 s, training 5.3 min, 670k splats) and Medium about 15 (SfM about 4 min, training 11 min). High is not measured yet (SfM at high took 6.7 min for 150 frames; High uses 300). Low has 10k steps rather than 5k because Spirula adds at most about 10% splats per 100 steps, and stops 2,500 steps before the end: 5k steps ended at 58k splats.
+- **Preview during training:** a still image, not a live viewer. An idle SuperSplat viewer keeps rendering at 60 fps and slowed training by 16% in the spike. For each checkpoint, load it, `captureFrame()`, `destroy()` the viewer and show the image (cost: a few seconds per preview). An "Explore" button opens the live viewer and says training is slower while it is open. Stop kills Spirula and keeps the latest complete checkpoint.
+- **Progress:** each stage shows a bar and what it is busy with; the header shows the whole job and the time left. Sources: blurdetect's per-frame lines (video), the photo count, Spirula SfM's `[extract] i/n`, `[match] i/n pairs matched` and `[map] ... images in the model: k` lines, and Spirula's `step i/n` line every 100 steps. Each stage has an estimate from M5 timings: SfM per image at each quality (matching is nearly all of it), training linear in steps (15k took 11 min). The speed seen so far scales what's left. The CLI draws one line in a terminal and prints a line per tenth of a stage otherwise.
 - **Sharpest frames:** video is sampled at 3 times the frame count, `blurdetect` scores every candidate, and the least blurred of each three is kept (in the test video the score ran from 4.8 to 7.7, and the extremes look like what they score).
 - **One job at a time.** Cancel kills the current step (finished steps stay). Closing the window or Cmd+Q asks first, then kills running tools (the macOS menu's Quit is our own item for that; the Dock's Quit still doesn't ask). The machine is kept awake during a job (`caffeinate` on macOS, `systemd-inhibit` on Linux). A system notification fires on finish or failure when the window isn't focused (not on Stop).
-- **GPU failures** are translated, not prevented (the no-GPU message is confirmed against a real failure: Brush panics with `No possible adapter available for backend`): "no supported GPU" (needs Metal or Vulkan) and "out of memory" (lower Detail). No startup check unless Brush offers a cheap one.
+- **GPU failures** are translated, not prevented: "no supported GPU" (needs Vulkan, or Metal on macOS) and "out of memory" (lower Detail). The strings matched in Spirula's log are Vulkan's error names, guessed until seen in real failures.
 
 ### Tools and where they come from
 | Tool | Source | Why |
 |---|---|---|
-| ffmpeg | conda-forge, pinned `ffmpeg=*=lgpl*` (9.0.2) | Reads iPhone tiled HEIC (needs ffmpeg 8.1+); same bundle as COLMAP. Unpinned, the solver picks the GPL build |
-| COLMAP | conda-forge, pinned `colmap=4.2.1=cpu*` | Current version on every OS, no compiling. The exact version pin is required: unpinned, the solver picked 3.11.1. The `cpu*` pin avoids the CUDA build on NVIDIA hosts. On Linux and Windows even the `cpu` builds require the CUDA build of faiss (about 670 MB with cuBLAS); COLMAP only uses faiss for image retrieval, so the bundle step swaps in the CPU build of the same faiss version. `libblas=*=*openblas` keeps MKL, which loads most of itself at runtime, out of the Windows bundle |
-| Brush | cargo build of a pinned git commit, run as a sidecar | Current code (the last release is from Sep 2025); a crash or GPU out-of-memory does not take the app down |
+| ffmpeg 9.0.2 | Static builds, pinned by sha256: macOS arm64 from [martin-riedl.de](https://ffmpeg.martin-riedl.de/), Linux and Windows x64 from [BtbN's FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (LGPL) | One self-contained binary, no libraries to collect. Reads iPhone tiled HEIC (needs 8.1+); blurdetect and the HDR to SDR conversion give the same output as the conda build used before. Spirula needs it too: Apple GPUs have no Vulkan video decoding |
+| Spirula Studio 2026.10.16 | Its release binary per platform, pinned by sha256 | SfM and training in one program, no compiling. Replaced COLMAP and Brush on 2026-10-17 (see Trainer comparison): about equal on clean video, much better with exposure drift, training 27% faster |
 
-ffmpeg and COLMAP are installed with `micromamba` into one folder that ships as a Tauri resource. The bundle step keeps only `bin/{colmap,ffmpeg,ffprobe}` and the libraries they link (found by walking `otool -L` / `ldd` / the PE import table from those three, plus export forwarders, since conda's Windows `libblas.dll` only forwards to `openblas.dll`; on Windows the DLLs sit in `bin/` beside the programs), and collects every package's license into `THIRD_PARTY_LICENSES/`. The app looks for tools in its bundled folder first, then on `PATH`.
+`scripts/bundle_tools.py` downloads both into `src-tauri/tools/bin`, which ships as a Tauri resource, checks their hashes, and collects their license texts and source pointers into `THIRD_PARTY_LICENSES/`. The app looks for tools in its bundled folder first, then on `PATH`.
 
-Brush notes: needs Rust 1.95 or newer. Its export file name pads `{iter}` to the width of the total step count (`export_5000.ply` for a 5k run, `export_05000.ply` for 30k), so the app picks the newest export instead of guessing names. When piped, its progress bar is hidden; `RUST_LOG=info` gives a `Refine iter N, X splats.` line every 200 steps up to 95% of training and `Compute backend: …` at start. GPU kernel tuning is cached in `~/.cache/cubecl`, so the first run is slower.
+Spirula notes:
+- Runs headless only with `--disable-viewer 1 --keep-viewer-alive 0`; otherwise it serves a web viewer and keeps running after training.
+- Prints `step i/n ( p%)  splats k ...` every 100 steps, also when piped. Writes `step-N.ckpt/splat.ply` (the standard 3DGS PLY layout) every `--steps-per-save` steps and at the end, keeping only the latest, without logging it; the app takes one untouched for 2 s as complete. SIGTERM leaves the last checkpoint.
+- Its SfM writes the model levelled on the ground plane but z-up (ground at z = 0). The SfM stage turns cameras and points a quarter turn about x to up = -Y, and training gets `--orientation-method none --center-method none --scene-center none` so the splats stay in that frame.
+- On macOS it runs on Metal through MoltenVK, linked into the binary. Matching is slow there: 150 frames took 3.6 min at medium and 6.5 at high, where COLMAP took 39 s; training more than makes up for it.
+- The Linux binary needs glibc 2.38, libgomp and libOpenGL.
 
 ### App
 - **Tauri** with **Vite + vanilla TypeScript** (no framework, no CSS library: about 300 lines of TS and hand-written CSS are less than Tailwind or a UI kit would add). Four views: Home, Progress, Viewer, Settings.
 - **Look:** GNOME / libadwaita patterns (header bars, status page, boxed-list preferences, pill and OSD buttons, Adwaita palette and fonts) on every platform. The header bars are the title bar: on macOS the window buttons float over them (`tauri.macos.conf.json`, overlay title bar); on Linux there is no system title bar (`tauri.linux.conf.json`), so each bar has GNOME's close button, drags the window and maximises on double-click, and tao resizes from the window edges.
-- **Viewer:** SuperSplat viewer (`@playcanvas/supersplat-viewer`, MIT): polished orbit/fly/touch controls, `frameScene()`, WebGPU with WebGL fallback. It has no content swap, so each preview export recreates the viewer (`destroy()` then `createViewer()`). It has no model rotation either, so orientation is fixed in the data by `model_orientation_aligner` before training. It applies the usual 180° Z flip to PLY data, so aligned scenes (up = -Y) show upright. Nice touch: set the initial camera to the first frame's pose (COLMAP camera center and view direction with x and y negated), so the viewer opens on the view the user filmed first.
+- **Viewer:** SuperSplat viewer (`@playcanvas/supersplat-viewer`, MIT): polished orbit/fly/touch controls, `frameScene()`, WebGPU with WebGL fallback. It has no content swap, so each preview recreates the viewer (`destroy()` then `createViewer()`). It has no model rotation either, so orientation is fixed in the data by the SfM stage before training. It applies the usual 180° Z flip to PLY data, so scenes with up = -Y show upright. Nice touch: set the initial camera to the first frame's pose (camera center and view direction from the model, with x and y negated), so the viewer opens on the view the user filmed first.
 - **CLI:** the same binary, arguments parsed with clap. `simplesplat <video|folder> [--detail low|medium|high] [--out DIR]` runs the pipeline headless when given an input, prints one progress line per step, and exits non-zero with the same plain-language message the UI shows. No window, no second binary to package. Advanced settings become flags only when someone needs them. On Windows the release binary is a GUI program: the CLI attaches to the terminal's console, but the shell doesn't wait for it. A console-subsystem copy named `simplesplat.com` beside the `.exe` would fix that, since shells try `.com` first.
 - **Update notice:** at startup, compare the app version with GitHub's latest release tag and show a download link if newer. No in-place updater. Only CI builds know their repository (`GITHUB_REPOSITORY`, compiled into the frontend), so local builds never check. A pushed `v<version>` tag publishes the installers as that release; CI fails the tag if it doesn't match `src-tauri/Cargo.toml`, the one place the version is set.
 
 ### Nix
-- `flake.nix` provides the development environment: Rust (pinned explicitly at 1.95 or newer, since Brush needs it), cargo-tauri, Node, micromamba, and WebKitGTK and friends on Linux.
-- **Package** (`nix build`, x86_64-linux and aarch64-darwin): COLMAP and ffmpeg from nixpkgs (COLMAP 4.1.1 there, which takes every option we pass), Brush built with `rustPlatform` at the same pin (nixpkgs `brush` is an unrelated shell, and Brush gets the Vulkan loader on its rpath; NixOS supplies the drivers), and the app with nixpkgs' `cargo-tauri.hook`. The tools' folder is compiled into the app (`SIMPLESPLAT_TOOLS_DIR`) instead of a `PATH` wrapper, which would break the macOS `.app`.
-- Release builds for macOS, `.deb` and `.rpm` do not use Nix-built binaries, and run outside `nix develop` (plain rustup, Node, micromamba): anything compiled inside the shell can link against `/nix/store` paths.
+- `flake.nix` provides the development environment: Rust, Node (the Tauri CLI comes from npm), Python, cargo-about, and WebKitGTK and friends on Linux.
+- **Package** (`nix build`, x86_64-linux): ffmpeg from nixpkgs (9.0.1), Spirula's release binary patched with `autoPatchelfHook` (libstdc++ and libgomp, libglvnd, the Vulkan loader; NixOS supplies the drivers), and the app with nixpkgs' `cargo-tauri.hook`. The tools' folder is compiled into the app (`SIMPLESPLAT_TOOLS_DIR`). No macOS package: Spirula's macOS binary only comes in a `.dmg`, and Mac users have the app's own `.dmg`.
+- Release builds for macOS, `.deb` and `.rpm` do not use Nix-built binaries, and run outside `nix develop` (plain rustup, Node, Python): anything compiled inside the shell can link against `/nix/store` paths.
 
 ### Packaging
-- **macOS (arm64):** `.dmg`, ad-hoc signed for now. A symlink to the binary works (Tauri feature `process-relaunch-dangerous-allow-symlink-macos`), so a Homebrew cask can expose the CLI with `binary`. Before a public release: Developer ID, sign every bundled dylib with hardened runtime, notarize.
-- **Linux (x64):** `.deb` and `.rpm` (system WebKitGTK, so WebGL uses the real drivers; no AppImage, which bundles its own), depending on the Vulkan loader for Brush, plus the Nix package. The CLI lands in `/usr/bin`. Flatpak later (NVIDIA works through the matching GL extension).
-- **Size budget:** about 500 MB compressed installer. Measured on macOS: trimmed tools 305 MB (68 MB xz), Brush 102 MB stripped (39 MB xz), so about 110 MB compressed in total. No custom COLMAP build needed.
-- **Windows (x64):** NSIS installer, unsigned for now (SmartScreen warns). conda-forge `win-64` builds of both tools (trimmed: 280 MB, 180 files), Brush builds with cargo, WebView2 handles WebGL. Tools run without console windows (`CREATE_NO_WINDOW`), and `SetThreadExecutionState` keeps the machine awake. The installer doesn't put the CLI on `PATH`.
+- **macOS (arm64):** `.dmg`, ad-hoc signed for now. A symlink to the binary works (Tauri feature `process-relaunch-dangerous-allow-symlink-macos`), so a Homebrew cask can expose the CLI with `binary`. Before a public release: Developer ID, sign both bundled binaries with hardened runtime, notarize.
+- **Linux (x64):** `.deb` and `.rpm` (system WebKitGTK, so WebGL uses the real drivers; no AppImage, which bundles its own), plus the Nix package. They depend on glibc 2.38 or newer (Spirula), the Vulkan loader, libgomp and libOpenGL, so they install on Ubuntu 24.04, Debian 13, Fedora 39 and newer; CI builds them on Ubuntu 24.04. The CLI lands in `/usr/bin`. Flatpak later (NVIDIA works through the matching GL extension).
+- **Size budget:** about 500 MB compressed installer. Measured on macOS: tools 214 MB (45 MB xz), of which Spirula is 150 MB and ffmpeg 63 MB. With COLMAP, conda and Brush they were 407 MB (107 MB xz).
+- **Windows (x64):** NSIS installer, unsigned for now (SmartScreen warns). The tools are two static `.exe` files; WebView2 handles WebGL. Tools run without console windows (`CREATE_NO_WINDOW`), and `SetThreadExecutionState` keeps the machine awake. The installer doesn't put the CLI on `PATH`.
 
 ### Quality
-- Rust unit tests for pure logic: frame sampling math, error text to message mapping, step skipping.
+- Rust unit tests for pure logic: frame sampling math, the tools' progress lines, the upright rotation and `view.json`, error text to message mapping, step skipping.
 - A tiny dataset in the repo (about 20 photos of one object, 400 px).
-- CI on release tags and on demand (`.github/workflows/build.yml`): builds the macOS, Linux and Windows installers and runs the unit tests. Still to add: the CLI runs the full pipeline on Linux with Brush at about 100 steps on Mesa lavapipe (software Vulkan); on macOS, ffmpeg and COLMAP run from the moved conda bundle.
+- CI on release tags and on demand (`.github/workflows/build.yml`): builds the macOS, Linux and Windows installers and runs the unit tests. Still to add: the CLI runs the full pipeline on Linux at about 100 steps on Mesa lavapipe (software Vulkan).
 - Before each release: real phone videos on real hardware (Apple Silicon, NVIDIA Linux, AMD or Intel Linux).
 
 ### License
-Public repo, Apache-2.0. Bundled tools run as separate programs: Brush (Apache-2.0), COLMAP (BSD), ffmpeg (LGPL v3: built `--disable-gpl --enable-version3`), and COLMAP dependencies including GPL parts of SuiteSparse and x265 (through OpenImageIO and libheif). Their licenses and source pointers ship in `THIRD_PARTY_LICENSES/` (the bundle script collects them for every conda package it ships, about 90). The Rust crates compiled into Brush and into the app are listed with their license texts by `cargo-about` (`THIRD_PARTY_LICENSES/{brush,simplesplat}/crates.txt`). `scripts/about.toml` accepts permissive licenses (and MPL-2.0) only, so crates also offered under GPL or LGPL come under their permissive option.
+Public repo, Apache-2.0. Bundled tools run as separate programs: Spirula (GPL-3.0) and ffmpeg (GPL on macOS, where the build includes x264 and x265; LGPL on Linux and Windows). Their license texts and source pointers ship in `THIRD_PARTY_LICENSES/`. The Rust crates compiled into the app are listed with their license texts by `cargo-about` (`THIRD_PARTY_LICENSES/simplesplat/crates.txt`). `scripts/about.toml` accepts permissive licenses (and MPL-2.0) only, so crates also offered under GPL or LGPL come under their permissive option.
+
+## Trainer comparison (2026-10-17, Apple M5)
+
+Why COLMAP + Brush gave way to Spirula. Both trainers got the same 150 undistorted frames of the test video and 15k steps, scored on the same 19 held-out frames:
+
+| | PSNR | LPIPS | Time |
+|---|---|---|---|
+| Brush, test video | 23.60 | 0.276 | 15:04 |
+| Spirula, test video | 22.18 | 0.297 | 11:00 |
+| Brush, with simulated auto-exposure (±1 stop, white balance drift) | 20.77 | 0.301 | 15:05 |
+| Spirula, same | 22.34 | 0.288 | 10:59 |
+
+- Brush scores higher on clean video, but the two look alike; in the app the Spirula pipeline looked on par.
+- With exposure drift Brush gets colour blotches and Spirula is barely affected (its per-photo exposure and colour correction, PPISP and a bilateral grid). Brush has this only in an unreviewed pull request (#483).
+- SfM on the original frames: COLMAP 55 s, Spirula 6:44 at high, 3:49 at medium, 1:37 at low; all placed 150 of 150 frames at 0.7 to 0.9 px.
+- Costs of the switch: Linux needs glibc 2.38, SfM is slower on Macs, Low needs 10k steps, and Spirula is maintained by one person (GPL-3.0, pinned, a separate program that can be swapped back).
 
 ## Spike results (2026-10-15, Apple M5, 24 GB, macOS 26.5)
 
-Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a desk. Tools from the conda bundle **after moving it** to a path with spaces, and again from the **trimmed** bundle. Brush at commit `1388f74` (2026-10-03).
+With COLMAP and Brush, before the switch to Spirula; the ffmpeg, HEIC, HDR and viewer findings still hold. Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a desk. Tools from the conda bundle **after moving it** to a path with spaces, and again from the **trimmed** bundle. Brush at commit `1388f74` (2026-10-03).
 
 - [x] Moved conda folder: ffmpeg, ffprobe and COLMAP run, and the full pipeline works. The old prefix still appears in 688 files (build metadata), with no effect.
 - [x] Tiled HEIC (4032x3024, 48 tiles) decodes at full size. Resizing needs a second ffmpeg call.
 - [x] EXIF-rotated JPEG and HEIC (`irot`) photos: ffmpeg 9 turns them upright (checked with test files), and the JPEGs it writes carry no orientation tag, so nothing rotates twice.
 - [ ] HDR video: ffmpeg's scale filter converts frames to SDR BT.709 (`out_transfer`, `out_primaries`), which leaves SDR untouched; checked by round trips of a test pattern through HLG and PQ in BT.2020 (without it, HLG red 254,0,0 came back as 180,67,32; with it 231,5,7). A real iPhone HDR clip is still to try.
 - [x] COLMAP 4.2.1 has `global_mapper` and `model_orientation_aligner`. 150/150 frames registered, 0.8 px reprojection error.
-- [x] Brush: flags, periodic export, piped progress (see Brush notes), distortion models. No GPU probe flag; GPU errors would surface within seconds of starting.
+- [x] Brush: flags, periodic export, piped progress, distortion models. No GPU probe flag; GPU errors would surface within seconds of starting.
 - [x] Orientation: Brush's own up estimate is tilted about 18° on raw COLMAP output. After `model_orientation_aligner --method IMAGE-ORIENTATION` (instant), up is -Y, and the SuperSplat viewer, placed at frame 1's pose, matches the photo.
 - [x] Bundle size: see Packaging.
 - [x] Tauri copies the tools folder intact as a resource: executable bits kept, and the bundle script copies real files instead of symlinks. The release `.app` (428 MB uncompressed) finds and runs all tools with none of them on `PATH`.
@@ -114,9 +134,10 @@ Input: 19.6 s portrait phone video (720x1280, H.264 SDR) of a potted plant on a 
 
 1. ~~Mac spike~~ done, see results above.
 2. ~~Scaffold~~ done on macOS: `flake.nix`, Tauri vanilla-ts app, `scripts/bundle_tools.py` (Linux `ldd` path checked in Docker, Windows import-table path against a downloaded win-64 env).
-3. ~~Pipeline + CLI~~ done: `src-tauri/src/pipeline.rs` driven by `simplesplat <input> [--detail] [--out]` (same binary; no arguments starts the app). On the M5, Low takes 3 minutes for the 20 s test video; a re-run skips every stage.
+3. ~~Pipeline + CLI~~ done: `src-tauri/src/pipeline.rs` (stages in `pipeline/`) driven by `simplesplat <input> [--detail] [--out]` (same binary; no arguments starts the app). On the M5, Low takes about 6 minutes for the 20 s test video (3 with COLMAP and Brush); a re-run skips every stage.
 4. Mac app end to end: all four views on top of the same pipeline, notifications, update notice, progress with time left. Still to do: a click-through of the GUI.
 5. CI: ~~release builds and unit tests on macOS, Linux and Windows, releases from tags~~; still to do: test dataset, smoke runs.
 6. Linux `.deb` and `.rpm`, tested on NVIDIA and on AMD or Intel.
-7. ~~Nix package~~ (`nix build`): built and run on aarch64-darwin; x86_64-linux built in Docker (tests pass, `.desktop` entry included), and its CLI ran ffmpeg and COLMAP from nixpkgs (100 of 100 frames placed); training needs a GPU the container doesn't have. (Under Docker's x86_64 emulation on a Mac the Tauri CLI wrongly rejects the build target, because a missing `rustup` looks like it ran; the test added a stand-in `rustup`. Real Linux doesn't need that.)
-8. Later: notarization, Windows code signing, Flatpak, multiple videos per scene.
+7. Nix package (`nix build`): since the switch to Spirula x86_64-linux only, and it evaluates but is not built yet (needs Linux, or Docker as below). With COLMAP and Brush it was built and run on aarch64-darwin; x86_64-linux built in Docker (tests pass, `.desktop` entry included), and its CLI ran ffmpeg and COLMAP from nixpkgs (100 of 100 frames placed); training needs a GPU the container doesn't have. (Under Docker's x86_64 emulation on a Mac the Tauri CLI wrongly rejects the build target, because a missing `rustup` looks like it ran; the test added a stand-in `rustup`. Real Linux doesn't need that.)
+8. ~~Switch to Spirula~~ (2026-10-17): see Trainer comparison. Still to do: a run on Linux and on Windows.
+9. Later: notarization, Windows code signing, Flatpak, multiple videos per scene.

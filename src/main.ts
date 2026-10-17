@@ -95,7 +95,6 @@ function request(input: string) {
     maxSize: num("maxSize"),
     exportEvery: num("exportEvery"),
     singleCamera: v.singleCamera === "" ? undefined : v.singleCamera === "true",
-    incrementalMapper: v.incrementalMapper,
     keepIntermediates: v.keepIntermediates,
   };
 }
@@ -141,8 +140,8 @@ $("new").onclick = () => {
 // Progress: one row per pipeline stage (with the tool behind it), filled in as events arrive.
 const STAGES = [
   ["Preparing images", "ffmpeg"],
-  ["Finding camera positions", "COLMAP"],
-  ["Training the splat", "Brush"],
+  ["Finding camera positions", "Spirula"],
+  ["Training the splat", "Spirula"],
 ];
 const row = (n: number) => $("stages").querySelector<HTMLElement>(`li[data-n="${n}"]`);
 function renderStages() {
@@ -194,7 +193,7 @@ async function begin(path: string) {
   invoke("start", { request: request(path) }).catch((err) => fail(String(err)));
 }
 
-// Time left, counted down between progress events (Brush is quiet for its last 5%).
+// Time left, counted down between progress events.
 let finishAt = 0;
 function showTimeLeft() {
   const secs = (finishAt - Date.now()) / 1000;

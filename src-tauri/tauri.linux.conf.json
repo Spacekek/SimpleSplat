@@ -20,12 +20,18 @@
     "linux": {
       "deb": {
         "depends": [
-          "libvulkan1"
+          "libc6 (>= 2.38)",
+          "libvulkan1",
+          "libgomp1",
+          "libopengl0"
         ]
       },
       "rpm": {
         "depends": [
-          "vulkan-loader"
+          "glibc >= 2.38",
+          "vulkan-loader",
+          "libgomp",
+          "libglvnd-opengl"
         ]
       }
     }
