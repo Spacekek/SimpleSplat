@@ -82,6 +82,10 @@ code {
   font-size: 0.85em;
 }
 
+#gpu-fit.warn {
+  color: var(--error);
+}
+
 /* Views: one visible at a time. */
 body > section {
   display: none;

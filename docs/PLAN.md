@@ -39,13 +39,14 @@ Spirula's SfM works in a temporary `sfm/` (features and matches), deleted once `
 
 ### Product
 - **Main screen is one button.** Drop an input, press Go.
-- **Settings screen.** Simple: Detail (Low/Medium/High) and output location. Advanced, collapsed at the bottom: frame count, max image size, training steps, preview export interval, single camera, keep intermediates, open log folder.
-- **Detail presets:** frames 100/150/300, training steps 10k/15k/30k, SfM quality low/medium/high. On an M5 with the 20 s test video, Low takes about 6 minutes in all (SfM 47 s, training 5.3 min, 670k splats) and Medium about 15 (SfM about 4 min, training 11 min). High is not measured yet (SfM at high took 6.7 min for 150 frames; High uses 300). Low has 10k steps rather than 5k because Spirula adds at most about 10% splats per 100 steps, and stops 2,500 steps before the end: 5k steps ended at 58k splats.
+- **Settings screen.** Simple: Detail (Low/Medium/High), output location, and what the run needs of the GPU's memory. Advanced, collapsed at the bottom: frame count, max image size, training steps, preview export interval, single camera, camera position quality (SfM), max splats, floater suppression, ignore moving things, exposure correction, keep intermediates, open log folder. A choice without a default that always wins becomes an Advanced setting, technical or not; its "Auto" follows the app's default, so a better default reaches everyone who never changed it.
+- **Detail presets:** frames 100/150/300, training steps 10k/15k/30k, SfM quality low/medium/high, splat cap 1M/1M/3M (Spirula's own `--quality` presets differ only in that cap: 200k/1M/3M/10M; its 200k saved Low no time, 5:04 against 5:19). On an M5 with the 20 s test video: Low about 6 minutes in all (SfM 47 s, training 5.3 min, 670k splats), Medium 16 (SfM 3.7 min, training 12 min), High 69 (SfM 13.5 min for 300 frames, training 55.5 min, 3M splats, a 693 MB `scene.ply`). Low has 10k steps rather than 5k because Spirula adds at most about 10% splats per 100 steps, and stops 2,500 steps before the end: 5k steps ended at 58k splats.
 - **Preview during training:** a still image, not a live viewer. An idle SuperSplat viewer keeps rendering at 60 fps and slowed training by 16% in the spike. For each checkpoint, load it, `captureFrame()`, `destroy()` the viewer and show the image (cost: a few seconds per preview). An "Explore" button opens the live viewer and says training is slower while it is open. Stop kills Spirula and keeps the latest complete checkpoint.
 - **Progress:** each stage shows a bar and what it is busy with; the header shows the whole job and the time left. Sources: blurdetect's per-frame lines (video), the photo count, Spirula SfM's `[extract] i/n`, `[match] i/n pairs matched` and `[map] ... images in the model: k` lines, and Spirula's `step i/n` line every 100 steps. Each stage has an estimate from M5 timings: SfM per image at each quality (matching is nearly all of it), training linear in steps (15k took 11 min). The speed seen so far scales what's left. The CLI draws one line in a terminal and prints a line per tenth of a stage otherwise.
 - **Sharpest frames:** video is sampled at 3 times the frame count, `blurdetect` scores every candidate, and the least blurred of each three is kept (in the test video the score ran from 4.8 to 7.7, and the extremes look like what they score).
 - **One job at a time.** Cancel kills the current step (finished steps stay). Closing the window or Cmd+Q asks first, then kills running tools (the macOS menu's Quit is our own item for that; the Dock's Quit still doesn't ask). The machine is kept awake during a job (`caffeinate` on macOS, `systemd-inhibit` on Linux). A system notification fires on finish or failure when the window isn't focused (not on Stop).
 - **GPU failures** are translated, not prevented: "no supported GPU" (needs Vulkan, or Metal on macOS) and "out of memory" (lower Detail). The strings matched in Spirula's log are Vulkan's error names, guessed until seen in real failures.
+- **GPU memory** is checked before a run and watched during it (`src-tauri/src/gpu.rs`). `spirula sam devices` names the GPU Spirula will use (a discrete one first) and its memory; on macOS MoltenVK also reports Metal's working-set limit, which is what counts (18.2 of 24 GB on the M5). The estimate is a fixed 300 MiB plus 450 bytes per splat of Max Splats plus 100 per pixel of the largest image: Spirula reserves the splat buffers for the whole cap up front (343 bytes each, measured at 1M, 3M and 10M), an image costs 61 bytes per pixel, and the rest covers the scratch that grows with the live splats (about 65 MiB per million), the high-water mark and the context. That puts Low and Medium at about 0.9 GB, High at 1.7 GB and 10M splats at 4.7 GB; the measured peak at 1M was 0.47 GB. Above 90% of the GPU's memory, Settings shows the estimate in red with what to lower, the home summary adds "may not fit in GPU memory", and the run starts with the same warning. During training, Spirula's own forecast warning (projected peak, memory free, chance of running out) comes through in plain words. Its forecast can't replace the estimate: at step 1,000 it projected 1.6 GiB for the 1M run that peaked at 0.47, and 72 GiB for 20 photos.
 
 ### Tools and where they come from
 | Tool | Source | Why |
@@ -81,7 +82,7 @@ Spirula notes:
 - **Windows (x64):** NSIS installer, unsigned for now (SmartScreen warns). The tools are two static `.exe` files; WebView2 handles WebGL. Tools run without console windows (`CREATE_NO_WINDOW`), and `SetThreadExecutionState` keeps the machine awake. The installer doesn't put the CLI on `PATH`.
 
 ### Quality
-- Rust unit tests for pure logic: frame sampling math, the tools' progress lines, the upright rotation and `view.json`, error text to message mapping, step skipping.
+- Rust unit tests for pure logic: frame sampling math, the tools' progress lines, the upright rotation and `view.json`, the GPU listing and memory estimate, error text to message mapping, step skipping. `cargo test -- --ignored` also asks the bundled Spirula for this machine's GPU.
 - A tiny dataset in the repo (about 20 photos of one object, 400 px).
 - CI on release tags and on demand (`.github/workflows/build.yml`): builds the macOS, Linux and Windows installers and runs the unit tests. Still to add: the CLI runs the full pipeline on Linux at about 100 steps on Mesa lavapipe (software Vulkan).
 - Before each release: real phone videos on real hardware (Apple Silicon, NVIDIA Linux, AMD or Intel Linux).
@@ -104,6 +105,19 @@ Why COLMAP + Brush gave way to Spirula. Both trainers got the same 150 undistort
 - With exposure drift Brush gets colour blotches and Spirula is barely affected (its per-photo exposure and colour correction, PPISP and a bilateral grid). Brush has this only in an unreviewed pull request (#483).
 - SfM on the original frames: COLMAP 55 s, Spirula 6:44 at high, 3:49 at medium, 1:37 at low; all placed 150 of 150 frames at 0.7 to 0.9 px.
 - Costs of the switch: Linux needs glibc 2.38, SfM is slower on Macs, Low needs 10k steps, and Spirula is maintained by one person (GPL-3.0, pinned, a separate program that can be swapped back).
+
+### Settings tests (Medium, 150 frames, 19 held out)
+
+| Variant | PSNR | Colour-corrected PSNR | LPIPS | Training |
+|---|---|---|---|---|
+| Defaults (exposure correction on, floater suppression off, SfM medium) | 22.63 | 23.99 | 0.270 | 12:08 |
+| Exposure correction off | 24.11 | 24.30 | 0.259 | 9:49 |
+| Floater suppression mild | 23.06 | 24.20 | 0.262 | 13:05 |
+| SfM at low | 22.56 | 23.83 | 0.288 | 11:24 (SfM 1:37 instead of 3:44) |
+
+- Exposure correction has no winner: off is better on this clean video, mostly by a global colour shift (0.3 dB colour-corrected), and on simulated exposure drift on was worth about 1.5 dB and removed colour blotches. It stays on, as a setting.
+- Floater suppression mild is better on every score for 8% more time.
+- SfM at low saves 2 minutes but loses clearly (LPIPS), so Medium keeps medium; Camera Position Quality lets people choose.
 
 ## Spike results (2026-10-15, Apple M5, 24 GB, macOS 26.5)
 

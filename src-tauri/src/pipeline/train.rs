@@ -34,6 +34,12 @@ pub(super) fn run(
         &s.steps.to_string(),
         "--steps-per-save",
         &s.export_every.unwrap_or(s.steps / 5).to_string(),
+        "--cap-max",
+        &s.max_splats.to_string(),
+        "--floater-suppression",
+        s.floater_suppression,
+        "--distraction-robustness",
+        s.ignore_moving,
         // The model is upright already, and the splats must stay in its frame.
         "--orientation-method",
         "none",
@@ -50,9 +56,15 @@ pub(super) fn run(
         "exports",
     ]);
     spirula.arg("--output-dir-prefix").arg(&job.project);
+    if !s.exposure_correction {
+        spirula.args(["--use-bilateral-grid", "0", "--use-ppisp", "0"]);
+    }
     let total = s.steps;
     let mut previewed = None;
     let result = job.run(spirula, &mut |line| {
+        if let Some(text) = memory_warning(line) {
+            out.event(Event::Info { text });
+        }
         let Some(done) = step(line) else {
             return;
         };
@@ -102,6 +114,21 @@ fn step(line: &str) -> Option<u32> {
         .ok()
 }
 
+/// Spirula's warning when its forecast of the run's peak memory nears what is free, in plain words.
+fn memory_warning(line: &str) -> Option<String> {
+    let rest = line.split("training may run out of GPU memory.").nth(1)?;
+    let after = |key: &str| {
+        let value = rest.split(key).nth(1)?.split_whitespace().next()?;
+        Some(value.trim_end_matches(['%', '.']).to_string())
+    };
+    Some(format!(
+        "Training may run out of GPU memory: Spirula expects it to need about {} GB, with {} GB free ({}% chance of running out). If it fails, lower Max Splats or Detail, or close other programs using the GPU.",
+        after("Projected peak: ")?,
+        after("free for training: ")?,
+        after("chance of running out: ")?
+    ))
+}
+
 /// Newest checkpoint splat (`<dir>/step-N.ckpt/splat.ply`) not modified for at least `settled`.
 fn newest_splat(dir: &Path, settled: Duration) -> Option<PathBuf> {
     let now = SystemTime::now();
@@ -140,6 +167,13 @@ mod tests {
             "step   2101/6000 ( 35%)  splats 23933  [elapsed 00:00:52.534 | ETA 00:02:43.365]";
         assert_eq!(step(line), Some(2101));
         assert_eq!(step("Training complete. Steps: 300"), None);
+        let warning = "Warning: training may run out of GPU memory. Projected peak: 7.4 \u{b1} 0.6 GiB   free for training: 7.2 GiB   chance of running out: 64%. Lower --cap-max, or close other programs using the GPU.";
+        assert!(
+            memory_warning(warning)
+                .unwrap()
+                .contains("about 7.4 GB, with 7.2 GB free (64% chance")
+        );
+        assert_eq!(memory_warning(line), None);
         assert_eq!(grouped(4200), "4,200");
         assert_eq!(grouped(30_000), "30,000");
         assert_eq!(grouped(1_000_000), "1,000,000");

@@ -127,6 +127,12 @@
                 <label><input type="radio" name="detail" value="high" /><span>High</span></label>
               </div>
             </div>
+            <div class="row">
+              <div class="row-text">
+                <div class="title">GPU Memory</div>
+                <div id="gpu-fit" class="subtitle">Checking the GPU…</div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -166,6 +172,20 @@
                 <option value="false">No</option>
               </select>
             </label>
+            <label class="row">
+              <div class="row-text"><div class="title">Camera Position Quality</div><div class="subtitle">Finding where each frame was taken: higher is more precise and slower. Auto follows Detail</div></div>
+              <select name="sfmQuality"><option value="">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
+            </label>
+            <label class="row"><div class="row-text"><div class="title">Max Splats</div><div class="subtitle">Auto: 1 million, 3 million at High detail</div></div><input type="number" name="maxSplats" min="10000" placeholder="Auto" /></label>
+            <label class="row">
+              <div class="row-text"><div class="title">Floater Suppression</div><div class="subtitle">Cleans up floating blobs and see-through surfaces. Auto: off</div></div>
+              <select name="floaterSuppression"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select>
+            </label>
+            <label class="row">
+              <div class="row-text"><div class="title">Ignore Moving Things</div><div class="subtitle">People, cars and anything else that moves between frames. Auto: off</div></div>
+              <select name="ignoreMoving"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select>
+            </label>
+            <label class="row"><div class="row-text"><div class="title">Exposure Correction</div><div class="subtitle">Evens out brightness and colour changes between frames</div></div><input type="checkbox" class="switch" name="exposureCorrection" checked /></label>
             <label class="row"><div class="row-text"><div class="title">Keep Intermediate Files</div><div class="subtitle">Makes re-runs faster</div></div><input type="checkbox" class="switch" name="keepIntermediates" checked /></label>
           </div>
         </details>

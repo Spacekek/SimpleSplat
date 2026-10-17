@@ -1,0 +1,131 @@
+//! The GPU Spirula trains on, and whether a run's memory fits on it.
+
+use crate::pipeline::{Settings, tool};
+use serde::Serialize;
+use std::path::Path;
+
+/// Peak memory of a training run: a fixed part, the splat buffers (sized for Max Splats up front),
+/// and the per-pixel buffers of the image a step trains on. Measured on the M5 with Spirula
+/// 2026.10.16 at step 1,000: 343 bytes per splat of the cap (1M, 3M and 10M agree) and 61 per pixel
+/// (20 photos at full and half size); the splat x image scratch then grows by about 65 MiB per
+/// million live splats (408 to 470 MiB over a 1M run). Rounded up for the high-water mark, which
+/// sits above the steady pool, and the GPU context. Spirula's own forecast is no help before a run:
+/// at step 1,000 it projected 1.6 GiB for that 1M run and 72 GiB for the 20 photos.
+const FIXED_MIB: f64 = 300.0;
+const BYTES_PER_SPLAT: f64 = 450.0;
+const BYTES_PER_PIXEL: f64 = 100.0;
+
+#[derive(Clone, Serialize)]
+pub struct Gpu {
+    pub name: String,
+    /// Memory a run may use: the device's, or on macOS what Metal allows (less than the RAM).
+    pub mib: u64,
+}
+
+/// The device Spirula picks (a discrete GPU before an integrated one), or None if it finds none.
+pub fn detect(tools: Option<&Path>) -> Option<Gpu> {
+    let out = tool(tools, "spirula")
+        .args(["sam", "devices"])
+        .output()
+        .ok()?;
+    parse(&(String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr)))
+}
+
+/// `spirula sam devices` prints a table (`idx name type vram uuid status`); on macOS, MoltenVK
+/// also logs `GPU memory available: 18186 MB`, Metal's working-set limit.
+fn parse(text: &str) -> Option<Gpu> {
+    let devices: Vec<(bool, String, u64)> = text
+        .lines()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let kind = words
+                .iter()
+                .position(|w| ["discrete", "integrated", "virtual", "cpu", "other"].contains(w))?;
+            let size: f64 = words.get(kind + 1)?.parse().ok()?;
+            let mib = size
+                * if *words.get(kind + 2)? == "G" {
+                    1024.0
+                } else {
+                    1.0
+                };
+            (words.first()?.parse::<u32>().is_ok() && words.last() == Some(&"ok")).then(|| {
+                (
+                    words[kind] == "discrete",
+                    words[1..kind].join(" "),
+                    mib as u64,
+                )
+            })
+        })
+        .collect();
+    let (_, name, mib) = devices.iter().find(|d| d.0).or(devices.first())?.clone();
+    let metal = text
+        .split("GPU memory available: ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next()?.parse().ok());
+    Some(Gpu {
+        name,
+        mib: metal.map_or(mib, |m: u64| m.min(mib)),
+    })
+}
+
+/// Estimated peak GPU memory of training with `s`, in MiB.
+pub fn need_mib(s: &Settings) -> u64 {
+    let pixels = (s.max_size as f64).powi(2) * 0.75; // a 4:3 image, the larger of the usual shapes
+    (FIXED_MIB + (s.max_splats as f64 * BYTES_PER_SPLAT + pixels * BYTES_PER_PIXEL) / 1048576.0)
+        as u64
+}
+
+/// A warning when training with `s` may not fit on `gpu` (the last tenth is kept free for the
+/// display and other programs).
+pub fn warning(s: &Settings, gpu: &Gpu) -> Option<String> {
+    let need = need_mib(s);
+    (need * 10 > gpu.mib * 9).then(|| {
+        format!(
+            "This run may need about {} of GPU memory, and {} has {}. If it fails, lower Max Splats, Max Image Size or Detail.",
+            gb(need),
+            gpu.name,
+            gb(gpu.mib)
+        )
+    })
+}
+
+pub fn gb(mib: u64) -> String {
+    format!("{:.1} GB", mib as f64 / 1024.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devices_and_estimates() {
+        let mac = "[mvk-info] GPU device:\n\tmodel: Apple M5\n\tGPU memory available: 18186 MB\n\
+            idx name                type        vram     uuid                         status\n\
+            0   Apple M5            integrated    24.0 G uuid:0000106b1a05020a0000  ok\n";
+        let gpu = parse(mac).unwrap();
+        assert_eq!((gpu.name.as_str(), gpu.mib), ("Apple M5", 18186));
+        let pc = "0   Intel(R) UHD Graphics 770   integrated    16.0 G uuid:aa  ok\n\
+            1   NVIDIA GeForce RTX 3060   discrete    12.0 G uuid:bb  ok\n\
+            2   llvmpipe   cpu    4.0 G uuid:cc  unsupported\n";
+        let gpu = parse(pc).unwrap();
+        assert_eq!(
+            (gpu.name.as_str(), gpu.mib),
+            ("NVIDIA GeForce RTX 3060", 12288)
+        );
+        assert!(parse("No Vulkan devices found.").is_none());
+
+        let mut s = Settings::detail("high").unwrap();
+        assert!(warning(&s, &gpu).is_none(), "{}", need_mib(&s));
+        s.max_splats = 100_000_000;
+        assert!(warning(&s, &gpu).unwrap().contains("RTX 3060 has 12.0 GB"));
+    }
+
+    #[test]
+    #[ignore = "needs src-tauri/tools (npm run tools) and a GPU: cargo test -- --ignored"]
+    fn detects_the_gpu_with_the_bundled_spirula() {
+        let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/bin");
+        let gpu = detect(Some(&tools)).expect("Spirula found no GPU");
+        println!("{} with {} MiB", gpu.name, gpu.mib);
+        assert!(gpu.mib > 0);
+    }
+}

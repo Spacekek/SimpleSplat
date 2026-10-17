@@ -60,15 +60,29 @@ function values(): Record<string, string | boolean> {
   }
   return v;
 }
+let mayNotFit = false;
 function updateSummary() {
   const v = values();
   const detail = String(v.detail).replace(/^./, (c) => c.toUpperCase());
   const where = v.output === "folder" && v.outDir ? `saved in ${baseName(String(v.outDir))}` : "saved next to the input";
-  $("summary").textContent = `${detail} detail · ${where}`;
+  $("summary").textContent = `${detail} detail · ${where}${mayNotFit ? " · may not fit in GPU memory" : ""}`;
+}
+// What a run with these settings needs of the GPU's memory (the backend asks Spirula for the GPU once).
+type Fit = { gpu?: { name: string; mib: number }; need: string; warning?: string };
+async function updateFit() {
+  try {
+    const fit = await invoke<Fit>("estimate", { request: request("") });
+    $("gpu-fit").textContent = fit.warning ?? (fit.gpu ? `About ${fit.need} of ${(fit.gpu.mib / 1024).toFixed(1)} GB on ${fit.gpu.name}` : "No supported GPU found (Spirula needs Vulkan, or Metal on macOS)");
+    $("gpu-fit").classList.toggle("warn", !!fit.warning || !fit.gpu);
+    mayNotFit = !!fit.warning || !fit.gpu;
+    updateSummary();
+  } catch {}
 }
 updateSummary();
+updateFit();
 form.addEventListener("change", () => {
   updateSummary();
+  updateFit();
   try {
     localStorage.setItem("settings", JSON.stringify(values()));
   } catch {}
@@ -95,6 +109,11 @@ function request(input: string) {
     maxSize: num("maxSize"),
     exportEvery: num("exportEvery"),
     singleCamera: v.singleCamera === "" ? undefined : v.singleCamera === "true",
+    sfmQuality: v.sfmQuality || undefined,
+    maxSplats: num("maxSplats"),
+    floaterSuppression: v.floaterSuppression || undefined,
+    ignoreMoving: v.ignoreMoving || undefined,
+    exposureCorrection: v.exposureCorrection,
     keepIntermediates: v.keepIntermediates,
   };
 }

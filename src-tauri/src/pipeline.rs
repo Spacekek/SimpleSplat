@@ -32,17 +32,28 @@ pub struct Settings {
     pub single_camera: Option<bool>,
     /// Spirula's SfM preset: low, medium or high (image size, features, pairs).
     pub sfm_quality: &'static str,
+    /// The most splats training may grow to.
+    pub max_splats: u32,
+    /// Spirula's floater suppression and distraction robustness: off, mild or strong.
+    pub floater_suppression: &'static str,
+    pub ignore_moving: &'static str,
+    /// Per-frame exposure and colour correction (PPISP and a bilateral grid).
+    pub exposure_correction: bool,
     pub keep_intermediates: bool,
 }
 
+/// The values of Settings' off/mild/strong levels.
+pub const LEVELS: [&str; 3] = ["off", "mild", "strong"];
+
 impl Settings {
     pub fn detail(name: &str) -> Option<Self> {
-        let (frames, steps, sfm_quality) = match name {
+        let (frames, steps, sfm_quality, max_splats) = match name {
             // Spirula adds at most about 10% splats per 100 steps until 2,500 before the end:
             // on the test video 5k steps ended at 58k splats, 10k at 670k (Brush's 5k: about 240k).
-            "low" => (100, 10_000, "low"),
-            "medium" => (150, 15_000, "medium"),
-            "high" => (300, 30_000, "high"),
+            "low" => (100, 10_000, "low", 1_000_000),
+            "medium" => (150, 15_000, "medium", 1_000_000),
+            // Spirula's own high preset; its low one (200k) saved Low no time, 5:04 for 5:19.
+            "high" => (300, 30_000, "high", 3_000_000),
             _ => return None,
         };
         Some(Self {
@@ -52,6 +63,10 @@ impl Settings {
             export_every: None,
             single_camera: None,
             sfm_quality,
+            max_splats,
+            floater_suppression: "off",
+            ignore_moving: "off",
+            exposure_correction: true,
             keep_intermediates: true,
         })
     }
@@ -224,6 +239,11 @@ pub fn run(
     emit(Event::Project {
         path: job.project.clone(),
     });
+    if let Some(text) =
+        crate::gpu::detect(tools).and_then(|gpu| crate::gpu::warning(settings, &gpu))
+    {
+        emit(Event::Info { text });
+    }
     job.pipeline(&input, settings, emit).map_err(|e| {
         if control.stopped() {
             STOPPED.into()
@@ -295,7 +315,10 @@ impl Job<'_> {
             |job, dir, out| sfm::run(job, video, single_camera, s.sfm_quality, dir, out),
         )?;
 
-        let train_key = format!("{sfm_key} | spirula train steps={}", s.steps);
+        let train_key = format!(
+            "{sfm_key} | spirula train steps={} splats={} floaters={} moving={} exposure={}",
+            s.steps, s.max_splats, s.floater_suppression, s.ignore_moving, s.exposure_correction
+        );
         self.stage(
             3,
             "Training the splat",
@@ -350,20 +373,8 @@ impl Job<'_> {
         Ok(())
     }
 
-    /// A bundled tool if present, otherwise the bare name for a PATH lookup.
     fn cmd(&self, name: &str) -> Command {
-        let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-        let bundled = self
-            .tools
-            .as_ref()
-            .map(|dir| dir.join(file))
-            .filter(|path| path.exists());
-        #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut cmd = Command::new(bundled.unwrap_or_else(|| name.into()));
-        // On Windows each console tool started by the app would open its own console window.
-        #[cfg(windows)]
-        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
-        cmd
+        tool(self.tools.as_deref(), name)
     }
 
     /// Runs a command with its stdout and stderr lines appended to log.txt and passed to `on_line`.
@@ -434,6 +445,18 @@ impl Job<'_> {
         // The cut can land inside a multi-byte character.
         String::from_utf8_lossy(&tail).into_owned()
     }
+}
+
+/// A bundled tool if present, otherwise the bare name for a PATH lookup.
+pub fn tool(tools: Option<&Path>, name: &str) -> Command {
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let bundled = tools.map(|dir| dir.join(file)).filter(|path| path.exists());
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = Command::new(bundled.unwrap_or_else(|| name.into()));
+    // On Windows each console tool started by the app would open its own console window.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
+    cmd
 }
 
 fn project_dir(input: &Path, out: Option<&Path>) -> Result<PathBuf, String> {

@@ -1,15 +1,16 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod gpu;
 mod pipeline;
 
 use clap::Parser;
-use pipeline::{Control, Event, Settings};
+use pipeline::{Control, Event, LEVELS, Settings};
 use serde::Deserialize;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
@@ -34,6 +35,8 @@ struct AppState {
     tools: Option<PathBuf>,
     /// The running job; one at a time.
     job: Mutex<Option<Arc<Control>>>,
+    /// Found on first use: asking Spirula takes a moment.
+    gpu: OnceLock<Option<gpu::Gpu>>,
 }
 
 /// What the UI asks for: a Detail preset plus optional advanced overrides.
@@ -48,18 +51,74 @@ struct Request {
     max_size: Option<u32>,
     export_every: Option<u32>,
     single_camera: Option<bool>,
+    sfm_quality: Option<String>,
+    max_splats: Option<u32>,
+    floater_suppression: Option<String>,
+    ignore_moving: Option<String>,
+    exposure_correction: Option<bool>,
     keep_intermediates: Option<bool>,
 }
 
-#[tauri::command]
-fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(), String> {
+/// The settings a request asks for.
+fn settings(request: &Request) -> Result<Settings, String> {
     let mut s = Settings::detail(&request.detail).ok_or("Unknown Detail setting.")?;
     s.frames = request.frames.unwrap_or(s.frames);
     s.steps = request.steps.unwrap_or(s.steps);
     s.max_size = request.max_size.unwrap_or(s.max_size);
     s.export_every = request.export_every;
     s.single_camera = request.single_camera;
+    s.max_splats = request.max_splats.unwrap_or(s.max_splats);
+    // Passed on to Spirula as arguments, so only its own values get through.
+    let level = |value: Option<&str>, default| match value {
+        None => Ok(default),
+        Some(v) => LEVELS
+            .into_iter()
+            .find(|l| *l == v)
+            .ok_or(format!("Unknown setting: {v}")),
+    };
+    s.floater_suppression = level(
+        request.floater_suppression.as_deref(),
+        s.floater_suppression,
+    )?;
+    s.sfm_quality = match request.sfm_quality.as_deref() {
+        None => s.sfm_quality,
+        Some(q) => ["low", "medium", "high"]
+            .into_iter()
+            .find(|l| *l == q)
+            .ok_or(format!("Unknown setting: {q}"))?,
+    };
+    s.ignore_moving = level(request.ignore_moving.as_deref(), s.ignore_moving)?;
+    s.exposure_correction = request.exposure_correction.unwrap_or(s.exposure_correction);
     s.keep_intermediates = request.keep_intermediates.unwrap_or(s.keep_intermediates);
+    Ok(s)
+}
+
+/// The GPU, and the memory a run with `request` would need on it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Fit {
+    gpu: Option<gpu::Gpu>,
+    need: String,
+    warning: Option<String>,
+}
+
+#[tauri::command]
+async fn estimate(state: State<'_, AppState>, request: Request) -> Result<Fit, String> {
+    let s = settings(&request)?;
+    let found = state
+        .gpu
+        .get_or_init(|| gpu::detect(state.tools.as_deref()))
+        .clone();
+    Ok(Fit {
+        need: gpu::gb(gpu::need_mib(&s)),
+        warning: found.as_ref().and_then(|g| gpu::warning(&s, g)),
+        gpu: found,
+    })
+}
+
+#[tauri::command]
+fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(), String> {
+    let s = settings(&request)?;
 
     let mut job = state.job.lock().unwrap();
     if job.is_some() {
@@ -228,8 +287,14 @@ fn main() -> ExitCode {
         .manage(AppState {
             tools,
             job: Mutex::new(None),
+            gpu: OnceLock::new(),
         })
-        .invoke_handler(tauri::generate_handler![start, stop, allow_folder]);
+        .invoke_handler(tauri::generate_handler![
+            start,
+            stop,
+            allow_folder,
+            estimate
+        ]);
     // macOS's own Quit (Cmd+Q) ends the app at once; this one asks first while a job runs.
     #[cfg(target_os = "macos")]
     let app = app.menu(quit_that_asks).on_menu_event(|app, event| {
