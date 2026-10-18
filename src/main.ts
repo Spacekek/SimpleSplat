@@ -18,19 +18,21 @@ type JobEvent =
   | { kind: "progress"; n: number; fraction: number; overall: number; eta: number; what: string }
   | { kind: "preview"; path: string };
 type Viewer = Awaited<ReturnType<typeof createViewer>>;
-type View = "home" | "progress" | "viewer" | "settings";
+type View = "home" | "progress" | "viewer";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const show = (view: View) => (document.body.dataset.view = view);
 const dirOf = (path: string) => path.replace(/[\\/][^\\/]*$/, "");
 const baseName = (path: string) => path.replace(/^.*[\\/]/, "");
+const dialog = (id: string) => $<HTMLDialogElement>(id);
+const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
 // The header bars double as the title bar (tauri.macos/linux.conf.json). macOS keeps its own
 // window buttons over them; Linux has none, so add GNOME's close button to each bar.
 const platform = /Mac/.test(navigator.userAgent) ? "mac" : /Linux/.test(navigator.userAgent) ? "linux" : "other";
 document.body.dataset.platform = platform;
 if (platform === "linux") {
-  for (const end of document.querySelectorAll(".headerbar .end, .osd-bar .end")) {
+  for (const end of document.querySelectorAll("body > section .headerbar .end, body > section .osd-bar .end")) {
     const close = document.createElement("button");
     close.className = `btn circular window-close ${end.closest(".osd-bar") ? "osd" : ""}`;
     close.title = "Close";
@@ -159,8 +161,45 @@ renderDefaults();
 updateHome();
 updateFit();
 
-$("open-settings").onclick = () => show("settings");
-$("close-settings").onclick = () => show("home");
+const openSettings = () => dialog("settings").showModal();
+$("open-settings").onclick = openSettings;
+$("close-settings").onclick = () => dialog("settings").close();
+// Enter in a field must not submit (and reload) the page.
+form.addEventListener("submit", (e) => e.preventDefault());
+
+// Spin rows: fewer and more step from the value, or from the default when the field is empty.
+form.addEventListener("click", (e) => {
+  const button = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-step]");
+  if (!button) return;
+  e.preventDefault();
+  const input = button.parentElement!.querySelector("input")!;
+  const from = Number(input.value || input.placeholder.replace(/,/g, ""));
+  input.value = String(Math.max(Number(input.min), from + Number(button.dataset.step) * Number(input.dataset.step)));
+  onSettingsChange();
+});
+
+// The main menu: Settings and About.
+const menu = $("menu");
+const setMenu = (open: boolean) => {
+  menu.hidden = !open;
+  $("menu-button").setAttribute("aria-expanded", String(open));
+};
+$("menu-button").onclick = (e) => {
+  e.stopPropagation();
+  setMenu(menu.hidden !== false); // hidden can also be "until-found"
+};
+document.addEventListener("click", () => setMenu(false));
+document.addEventListener("keydown", (e) => e.key === "Escape" && setMenu(false));
+$("menu-settings").onclick = openSettings;
+$("menu-about").onclick = () => dialog("about").showModal();
+$("close-about").onclick = () => dialog("about").close();
+getVersion()
+  .then((v) => ($("about-version").textContent = v))
+  .catch(() => {});
+if (__REPO__) {
+  $("about-website").hidden = false;
+  $("about-website").onclick = () => openUrl(`https://github.com/${__REPO__}`);
+}
 $("choose-out").onclick = async () => {
   const dir = await open({ directory: true });
   if (typeof dir !== "string") return;
@@ -262,7 +301,7 @@ let latestPreview = "";
 let explorer: Viewer | null = null;
 
 async function begin(path: string) {
-  $("error").hidden = true;
+  dialog("error").close();
   if (path.toLowerCase().endsWith(".ply")) {
     await invoke("allow_folder", { path });
     return openViewer(path, dirOf(path));
@@ -270,7 +309,7 @@ async function begin(path: string) {
   closeViewer(); // a live viewer would slow training down
   // Nothing else checks the advanced fields' limits: the form is never submitted.
   if (!form.checkValidity()) {
-    show("settings");
+    openSettings();
     form.reportValidity();
     return;
   }
@@ -284,7 +323,7 @@ async function begin(path: string) {
   $("preview-empty").hidden = false;
   $("explore").hidden = true;
   $<HTMLButtonElement>("stop").disabled = false;
-  $("stop").textContent = "Stop";
+  $("stop-label").textContent = "Stop";
   show("progress");
   invoke("start", { request: request(path) }).catch((err) => fail(String(err)));
 }
@@ -293,7 +332,7 @@ async function begin(path: string) {
 let finishAt = 0;
 function showTimeLeft() {
   const secs = (finishAt - Date.now()) / 1000;
-  $("time-left").textContent = !finishAt ? "" : secs < 60 ? " · less than a minute left" : ` · about ${Math.round(secs / 60)} min left`;
+  $("time-left").textContent = !finishAt ? "" : secs < 60 ? " · less than a minute left" : ` · about ${plural(Math.round(secs / 60), "minute")} left`;
 }
 setInterval(showTimeLeft, 1000);
 
@@ -305,10 +344,10 @@ function fail(message: string) {
   errorLog = logPath.trim();
   $("error-text").textContent = text;
   $("error-log").hidden = !errorLog;
-  $("error").hidden = false;
+  dialog("error").showModal();
   show("home");
 }
-$("error-close").onclick = () => ($("error").hidden = true);
+$("error-close").onclick = () => dialog("error").close();
 
 // Update notice: a release build compares its version with the repository's latest release.
 const newer = (a: string, b: string) => {
@@ -321,13 +360,12 @@ if (__REPO__) {
     .then(([version, release]) => {
       const latest = String(release.tag_name).replace(/^v/, "");
       if (!newer(latest, version)) return;
-      $("update-text").textContent = `Version ${latest} is available. You have ${version}.`;
+      $("update-text").textContent = `Version ${latest} is available (you have ${version})`;
       $("update-get").onclick = () => openUrl(release.html_url);
       $("update").hidden = false;
     })
     .catch(() => {}); // offline, or no releases yet
 }
-$("update-close").onclick = () => ($("update").hidden = true);
 $("error-log").onclick = () => revealItemInDir(errorLog);
 
 listen<JobEvent>("job", ({ payload: e }) => {
@@ -352,7 +390,7 @@ listen<JobEvent>("job", ({ payload: e }) => {
         li.dataset.state = "done";
         setBar(li, 1);
         li.querySelector(".what")!.textContent = "";
-        addDetail(li, `Took ${e.secs < 90 ? `${e.secs} s` : `${Math.round(e.secs / 60)} min`}`);
+        addDetail(li, `Took ${e.secs < 90 ? plural(e.secs, "second") : plural(Math.round(e.secs / 60), "minute")}`);
       }
       break;
     }
@@ -390,7 +428,7 @@ listen<{ Ok: string } | { Err: string }>("job-end", ({ payload }) => {
 
 $("stop").onclick = () => {
   $<HTMLButtonElement>("stop").disabled = true;
-  $("stop").textContent = "Stopping…";
+  $("stop-label").textContent = "Stopping…";
   invoke("stop");
 };
 

@@ -61,7 +61,7 @@ struct Request {
 
 /// The settings a request asks for.
 fn settings(request: &Request) -> Result<Settings, String> {
-    let mut s = Settings::detail(&request.detail).ok_or("Unknown Detail setting.")?;
+    let mut s = Settings::detail(&request.detail).ok_or("Unknown Detail setting")?;
     s.frames = request.frames.unwrap_or(s.frames);
     s.steps = request.steps.unwrap_or(s.steps);
     s.max_size = request.max_size.unwrap_or(s.max_size);
@@ -128,7 +128,7 @@ fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(),
 
     let mut job = state.job.lock().unwrap();
     if job.is_some() {
-        return Err("A splat is already being made.".into());
+        return Err("A splat is already being made".into());
     }
     let control = Arc::new(Control::default());
     *job = Some(control.clone());
@@ -155,7 +155,7 @@ fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(),
             .is_some_and(|w| w.is_focused().unwrap_or(false));
         if !stopped && !focused {
             let (title, body) = match &result {
-                Ok(_) => ("Your splat is ready", "Open SimpleSplat to look around."),
+                Ok(_) => ("Your splat is ready", "Open SimpleSplat to look around"),
                 Err(err) => ("Making the splat failed", err.lines().next().unwrap_or("")),
             };
             let _ = app.notification().builder().title(title).body(body).show();
@@ -340,7 +340,7 @@ fn ask_to_quit(app: &AppHandle, window: &str) -> bool {
     let handle = app.clone();
     let mut ask = app
         .dialog()
-        .message("Finished steps are kept and skipped next time, but training starts over.")
+        .message("Finished steps are kept and skipped next time, but training starts over")
         .title("Quit While Making a Splat?")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(

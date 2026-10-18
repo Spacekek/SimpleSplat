@@ -82,7 +82,7 @@ pub(super) fn run(
     });
     let stopped = job.control.stopped();
     if result.is_err() && !stopped {
-        return Err(spirula_hint(&job.log_tail(), "Training failed.").into());
+        return Err(spirula_hint(&job.log_tail(), "Training failed").into());
     }
     // Only the latest checkpoint is kept, so a stopped run's preview may have made way for a
     // newer one; that one is complete, since the old one goes once it is written.
@@ -96,7 +96,7 @@ pub(super) fn run(
     .ok_or(if stopped {
         STOPPED
     } else {
-        "Training finished without writing a scene."
+        "Training finished without writing a scene"
     })?;
     fs::rename(newest, &scene).map_err(|e| e.to_string())?;
     // The rest is checkpoint state and settings.

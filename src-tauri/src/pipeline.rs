@@ -226,7 +226,7 @@ pub fn run(
     control: &Control,
     emit: &mut dyn FnMut(Event),
 ) -> Result<PathBuf, String> {
-    let input = fs::canonicalize(input).map_err(|_| format!("Can't find {}.", input.display()))?;
+    let input = fs::canonicalize(input).map_err(|_| format!("Can't find {}", input.display()))?;
     let project = project_dir(&input, out)?;
     let log_path = project.join("log.txt");
     let log = File::options()
@@ -335,7 +335,7 @@ impl Job<'_> {
 
         if self.control.stopped() {
             out.event(Event::Info {
-                text: "Stopped early: the result is the latest preview.".into(),
+                text: "Stopped early: the result is the latest preview".into(),
             });
         }
         if !s.keep_intermediates {
@@ -481,7 +481,7 @@ fn project_dir(input: &Path, out: Option<&Path>) -> Result<PathBuf, String> {
                 ) =>
         {
             let fallback = dirs::data_dir()
-                .ok_or("No writable folder for the results.")?
+                .ok_or("No writable folder for the results")?
                 .join("com.simplesplat.desktop")
                 .join(&name);
             fs::create_dir_all(&fallback)
@@ -523,7 +523,11 @@ pub fn about(secs: u64) -> String {
     if secs < 60 {
         "less than a minute".into()
     } else {
-        format!("about {} min", (secs + 30) / 60)
+        let minutes = (secs + 30) / 60;
+        format!(
+            "about {minutes} minute{}",
+            if minutes == 1 { "" } else { "s" }
+        )
     }
 }
 
@@ -648,7 +652,7 @@ mod tests {
         assert_eq!(
             spirula_hint(
                 "vkAllocateMemory: VK_ERROR_OUT_OF_DEVICE_MEMORY",
-                "Training failed."
+                "Training failed"
             ),
             "The GPU ran out of memory. Try a lower Detail setting."
         );

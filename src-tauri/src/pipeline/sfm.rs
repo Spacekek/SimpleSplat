@@ -54,11 +54,11 @@ pub(super) fn run(
     upright(&model)?;
     if let Some(placed) = placed {
         out.event(Event::Info {
-            text: format!("Placed {placed} of {total} frames."),
+            text: format!("Placed {placed} of {total} frames"),
         });
         if placed * 2 < total {
             out.event(Event::Info {
-                text: "Many frames couldn't be placed, so the result may have holes.".into(),
+                text: "Many frames couldn't be placed, so the result may have holes".into(),
             });
         }
     }
@@ -186,7 +186,7 @@ fn point_records(data: &[u8]) -> Option<Vec<usize>> {
 /// Turns Spirula's z-up model (ground at z = 0) to up = -Y, which the viewer and the planner
 /// expect: a quarter turn about x, (x, y, z) -> (x, -z, y).
 fn upright(model: &Path) -> Result<(), String> {
-    let broken = || "The camera positions came out unreadable.".to_string();
+    let broken = || "The camera positions came out unreadable".to_string();
     let edit = |name: &str, change: &dyn Fn(&mut [u8]) -> Option<()>| {
         let path = model.join(name);
         let mut data = fs::read(&path).map_err(|e| e.to_string())?;

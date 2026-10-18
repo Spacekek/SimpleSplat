@@ -12,11 +12,21 @@
       <header class="headerbar" data-tauri-drag-region="deep">
         <div class="start"></div>
         <div class="end">
+          <button type="button" id="menu-button" class="btn flat circular" title="Main Menu" aria-label="Main Menu" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+          <div id="menu" class="popover-menu" role="menu" hidden>
+            <button type="button" role="menuitem" id="menu-settings" class="menu-item">Settings</button>
+            <button type="button" role="menuitem" id="menu-about" class="menu-item">About SimpleSplat</button>
+          </div>
         </div>
       </header>
+      <div id="update" class="adw-banner" role="status" hidden>
+        <span id="update-text"></span>
+        <button type="button" id="update-get" class="btn">Download</button>
+      </div>
 
       <div class="status-page">
         <svg class="status-icon" viewBox="0 0 64 64" width="128" height="128" aria-hidden="true">
+          <symbol id="app-icon" viewBox="0 0 64 64">
           <defs>
             <radialGradient id="sb"><stop offset="0" stop-color="#3584e4" /><stop offset="0.55" stop-color="#3584e4" stop-opacity="0.85" /><stop offset="1" stop-color="#3584e4" stop-opacity="0" /></radialGradient>
             <radialGradient id="so"><stop offset="0" stop-color="#ff7800" /><stop offset="0.55" stop-color="#ff7800" stop-opacity="0.85" /><stop offset="1" stop-color="#ff7800" stop-opacity="0" /></radialGradient>
@@ -25,6 +35,8 @@
           <ellipse cx="26" cy="30" rx="17" ry="12" transform="rotate(-25 26 30)" fill="url(#sb)" />
           <ellipse cx="38" cy="28" rx="14" ry="9" transform="rotate(30 38 28)" fill="url(#so)" />
           <ellipse cx="32" cy="41" rx="15" ry="8" transform="rotate(-5 32 41)" fill="url(#sg)" />
+          </symbol>
+          <use href="#app-icon" />
         </svg>
         <h1>SimpleSplat</h1>
         <p class="description">Turn a video or a folder of photos into a 3D scene you can look around in.</p>
@@ -44,27 +56,7 @@
           <button id="choose-folder" class="btn pill">Choose Photo Folder…</button>
         </div>
 
-        <div id="update" class="banner" hidden>
-          <div>
-            <div class="title">Update Available</div>
-            <div id="update-text" class="subtitle"></div>
-          </div>
-          <div class="buttons">
-            <button id="update-get" class="btn suggested">Download</button>
-            <button id="update-close" class="btn flat">Dismiss</button>
-          </div>
-        </div>
-        <div id="error" class="banner error" role="alert" hidden>
-          <div>
-            <div class="title">Couldn't Make the Splat</div>
-            <div id="error-text" class="subtitle"></div>
-          </div>
-          <div class="buttons">
-            <button id="error-log" class="btn">Show Log</button>
-            <button id="error-close" class="btn flat">Dismiss</button>
-          </div>
-        </div>
-        <p class="caption dim">Or drop a video, a photo folder or a finished <code>.ply</code> here.</p>
+        <p class="caption dim">Or drop a video, a photo folder or a finished <code>.ply</code> here</p>
       </div>
       <footer class="home-footer">
         <button type="button" id="open-settings" class="btn pill">
@@ -84,12 +76,12 @@
           <div class="title">Making Splat</div>
           <div class="subtitle"><span id="project-name"></span><span id="time-left"></span></div>
         </div>
-        <div class="end"><button id="stop" class="btn destructive">Stop</button></div>
+        <div class="end"><button id="stop" class="btn flat icon-label" title="Stop making the splat"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg><span id="stop-label">Stop</span></button></div>
       </header>
       <div class="progress-body">
         <div id="preview" class="preview">
           <canvas id="preview-canvas" width="800" height="450"></canvas>
-          <p id="preview-empty" class="preview-empty dim">A preview appears here once training is under way.</p>
+          <p id="preview-empty" class="preview-empty dim">A preview appears here once training is under way</p>
           <div id="explore-host"></div>
           <div class="explore-bar">
             <p id="explore-note" class="osd-label" hidden>Training is slower while you explore</p>
@@ -104,22 +96,16 @@
     <section id="viewer">
       <div id="viewer-host"></div>
       <div class="osd-bar" data-tauri-drag-region="deep">
-        <div class="start"><button id="new" class="btn osd pill">‹ New Splat</button></div>
+        <div class="start"><button id="new" class="btn osd pill icon-label"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10.5 2.5 5 8l5.5 5.5 1.06-1.06L7.12 8l4.44-4.44z" fill="currentColor"/></svg><span>New Splat</span></button></div>
         <div class="end"><button id="reveal" class="btn osd pill">Show in Folder</button></div>
       </div>
     </section>
 
-    <section id="settings">
-      <header class="headerbar" data-tauri-drag-region="deep">
-        <div class="start">
-          <button type="button" id="close-settings" class="btn flat circular" title="Back" aria-label="Back">
-            <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
-              <path d="M10.5 2.5 5 8l5.5 5.5 1.06-1.06L7.12 8l4.44-4.44z" />
-            </svg>
-          </button>
-        </div>
-        <div class="window-title"><div class="title">Settings</div></div>
-        <div class="end"></div>
+    <dialog id="settings" class="dialog" aria-labelledby="settings-title" autofocus>
+      <header class="headerbar">
+        <div class="start"></div>
+        <div class="window-title"><div class="title" id="settings-title">Settings</div></div>
+        <div class="end"><button type="button" id="close-settings" class="btn flat circular" title="Close" aria-label="Close"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4.5 4.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
       </header>
       <form id="settings-form" class="content clamp">
         <p class="intro caption"><span class="dim">Defaults follow the Detail chosen on the start screen, now <strong id="current-detail"></strong>.</span> <span id="gpu-fit" class="dim"></span></p>
@@ -148,8 +134,8 @@
         <div class="group">
           <h3 class="group-title">Images</h3>
           <div class="boxed-list">
-            <label class="row"><div class="row-text"><div class="title">Images to Use</div><div class="subtitle">Frames from a video, or at most this many photos</div><div class="subtitle defaults" data-for="frames"></div></div><input type="number" name="frames" min="10" /></label>
-            <label class="row"><div class="row-text"><div class="title">Max Image Size</div><div class="subtitle">Pixels on the long side</div><div class="subtitle defaults" data-for="maxSize"></div></div><input type="number" name="maxSize" min="200" /></label>
+            <label class="row"><div class="row-text"><div class="title">Images to Use</div><div class="subtitle">Frames from a video, or at most this many photos</div><div class="subtitle defaults" data-for="frames"></div></div><div class="spin"><input type="number" name="frames" min="10" data-step="10" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
+            <label class="row"><div class="row-text"><div class="title">Max Image Size</div><div class="subtitle">Pixels on the long side</div><div class="subtitle defaults" data-for="maxSize"></div></div><div class="spin"><input type="number" name="maxSize" min="200" data-step="100" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
             <label class="row"><div class="row-text"><div class="title">Single Camera</div><div class="subtitle">Whether every image shares one lens</div><div class="subtitle defaults" data-for="singleCamera"></div></div><select name="singleCamera"><option value="">Auto</option><option value="true">Yes</option><option value="false">No</option></select></label>
             <label class="row"><div class="row-text"><div class="title">Camera Position Quality</div><div class="subtitle">Higher is more precise and slower</div><div class="subtitle defaults" data-for="sfmQuality"></div></div><select name="sfmQuality"><option value="">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
           </div>
@@ -158,12 +144,12 @@
         <div class="group">
           <h3 class="group-title">Training</h3>
           <div class="boxed-list">
-            <label class="row"><div class="row-text"><div class="title">Training Steps</div><div class="subtitle defaults" data-for="steps"></div></div><input type="number" name="steps" min="100" /></label>
-            <label class="row"><div class="row-text"><div class="title">Max Splats</div><div class="subtitle">More splats hold more detail, and need more GPU memory</div><div class="subtitle defaults" data-for="maxSplats"></div></div><input type="number" name="maxSplats" min="10000" /></label>
+            <label class="row"><div class="row-text"><div class="title">Training Steps</div><div class="subtitle defaults" data-for="steps"></div></div><div class="spin"><input type="number" name="steps" min="100" data-step="1000" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
+            <label class="row"><div class="row-text"><div class="title">Max Splats</div><div class="subtitle">More splats hold more detail, and need more GPU memory</div><div class="subtitle defaults" data-for="maxSplats"></div></div><div class="spin"><input type="number" name="maxSplats" min="10000" data-step="100000" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
             <label class="row"><div class="row-text"><div class="title">Floater Suppression</div><div class="subtitle">Cleans up floating blobs and see-through surfaces</div><div class="subtitle defaults" data-for="floaterSuppression"></div></div><select name="floaterSuppression"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select></label>
             <label class="row"><div class="row-text"><div class="title">Ignore Moving Things</div><div class="subtitle">People, cars and anything else that moves between images</div><div class="subtitle defaults" data-for="ignoreMoving"></div></div><select name="ignoreMoving"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select></label>
             <label class="row"><div class="row-text"><div class="title">Exposure Correction</div><div class="subtitle">Evens out brightness and colour changes between images</div><div class="subtitle defaults" data-for="exposureCorrection"></div></div><input type="checkbox" class="switch" name="exposureCorrection" checked /></label>
-            <label class="row"><div class="row-text"><div class="title">Preview Every</div><div class="subtitle">Training steps between previews</div><div class="subtitle defaults" data-for="exportEvery"></div></div><input type="number" name="exportEvery" min="100" /></label>
+            <label class="row"><div class="row-text"><div class="title">Preview Every</div><div class="subtitle">Training steps between previews</div><div class="subtitle defaults" data-for="exportEvery"></div></div><div class="spin"><input type="number" name="exportEvery" min="100" data-step="500" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
           </div>
         </div>
 
@@ -174,9 +160,39 @@
           </div>
         </div>
 
-        <div class="reset"><button type="button" id="reset" class="btn">Reset to Defaults</button></div>
+        <div class="group">
+          <div class="boxed-list">
+            <button type="button" id="reset" class="row button-row">Reset to Defaults</button>
+          </div>
+        </div>
       </form>
-    </section>
+    </dialog>
+
+    <dialog id="error" class="alert" aria-labelledby="error-title">
+      <h2 id="error-title">Couldn't Make the Splat</h2>
+      <p id="error-text"></p>
+      <div class="responses">
+        <button type="button" id="error-log" class="btn pill">Show Log</button>
+        <button type="button" id="error-close" class="btn pill" autofocus>Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="about" class="dialog about" aria-labelledby="about-name" autofocus>
+      <header class="headerbar">
+        <div class="start"></div>
+        <div class="end"><button type="button" id="close-about" class="btn flat circular" title="Close" aria-label="Close"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4.5 4.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
+      </header>
+      <div class="about-body">
+        <svg viewBox="0 0 64 64" width="96" height="96" aria-hidden="true"><use href="#app-icon" /></svg>
+        <h2 id="about-name">SimpleSplat</h2>
+        <span id="about-version" class="version"></span>
+        <p class="dim">Turn a video or a folder of photos into a 3D scene you can look around in</p>
+        <div class="boxed-list">
+          <button type="button" id="about-website" class="row button-row" hidden>Website</button>
+        </div>
+        <p class="caption dim">Apache-2.0. Uses Spirula Studio (GPL-3.0) and FFmpeg, run as separate programs.</p>
+      </div>
+    </dialog>
 
     <div id="capture-host"></div>
   </body>

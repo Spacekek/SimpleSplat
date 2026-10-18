@@ -16,6 +16,8 @@
   --fill-hover: color-mix(in srgb, currentColor 15%, transparent);
   --fill-active: color-mix(in srgb, currentColor 30%, transparent);
   --toggle-active-bg: var(--view-bg);
+  --popover-bg: #ffffff;
+  --dialog-bg: #fafafb;
   --card-shadow:
     0 0 0 1px rgb(0 0 6 / 0.03),
     0 1px 3px 1px rgb(0 0 6 / 0.07),
@@ -45,6 +47,8 @@
     --border: rgb(255 255 255 / 0.12);
     --shade: rgb(0 0 6 / 0.36);
     --toggle-active-bg: rgb(255 255 255 / 0.2);
+    --popover-bg: #36363a;
+    --dialog-bg: #36363a;
     --card-shadow:
       0 0 0 1px rgb(0 0 6 / 0.09),
       0 1px 3px 1px rgb(0 0 6 / 0.2),
@@ -86,21 +90,6 @@ code {
   color: var(--error);
 }
 
-/* A text button that reads as a link. */
-.link {
-  font: inherit;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.link:hover {
-  text-decoration: underline;
-}
-
 /* Views: one visible at a time. */
 body > section {
   display: none;
@@ -110,8 +99,7 @@ body > section {
 
 body[data-view="home"] #home,
 body[data-view="progress"] #progress,
-body[data-view="viewer"] #viewer,
-body[data-view="settings"] #settings {
+body[data-view="viewer"] #viewer {
   display: flex;
   flex-direction: column;
 }
@@ -148,7 +136,7 @@ body[data-view="settings"] #settings {
 }
 
 /* macOS keeps its window buttons, floating over the start of the bar. */
-body[data-platform="mac"] .start {
+body[data-platform="mac"] > section .start {
   padding-left: 72px;
 }
 
@@ -369,39 +357,6 @@ body.dragging #home::after {
   pointer-events: none;
 }
 
-.banner {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  max-width: 560px;
-  margin-top: 12px;
-  padding: 10px 12px 10px 16px;
-  text-align: start;
-  border-radius: 12px;
-  background: var(--card-bg);
-  box-shadow: var(--card-shadow);
-}
-
-.banner .title {
-  font-weight: 700;
-}
-
-.banner.error .title {
-  color: var(--error);
-}
-
-.banner .subtitle {
-  font-size: 0.9em;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.banner .buttons {
-  display: flex;
-  gap: 6px;
-  margin: 0;
-}
-
 /* Boxed lists and rows (preferences style). */
 .group + .group {
   margin-top: 24px;
@@ -564,9 +519,197 @@ input.switch:checked::after {
   font-weight: 700;
 }
 
-.reset {
+/* Spin rows: the value, then fewer and more. */
+.spin {
   display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.spin .btn {
+  width: 30px;
+  min-height: 30px;
+  height: 30px;
+  font-size: 1.1em;
+}
+
+.row input[type="number"]::-webkit-inner-spin-button,
+.row input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Button rows: an action closing a boxed list. */
+.button-row {
+  width: 100%;
   justify-content: center;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  cursor: default;
+}
+
+.button-row:hover {
+  background: var(--fill);
+}
+
+/* Icon and label buttons (header bars show them flat). */
+.icon-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.headerbar .icon-label {
+  padding-inline: 12px;
+}
+
+/* The main menu: a popover under its button. */
+.headerbar .end {
+  position: relative;
+}
+
+.popover-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--popover-bg);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 4px 16px rgb(0 0 0 / 0.2);
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 6px;
+  text-align: start;
+  font: inherit;
+  color: inherit;
+  background: none;
+}
+
+.menu-item:hover {
+  background: var(--fill);
+}
+
+/* Banner: a strip under the header bar. */
+.adw-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 46px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--accent-bg) 30%, var(--window-bg));
+}
+
+/* Dialogs: preferences and about (adaptive dialogs), and alerts. */
+dialog {
+  padding: 0;
+  border: 0;
+  color: var(--fg);
+  background: var(--dialog-bg);
+  border-radius: 14px;
+  box-shadow: 0 6px 30px rgb(0 0 0 / 0.35);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+}
+
+/* Opening one focuses the dialog itself (autofocus), as libadwaita does, not its close button. */
+dialog:focus {
+  outline: none;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+
+dialog.dialog[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#settings {
+  width: 640px;
+  height: min(720px, calc(100vh - 48px));
+}
+
+dialog .headerbar {
+  background: transparent;
+  box-shadow: none;
+}
+
+.about {
+  width: 360px;
+}
+
+.about-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 24px;
+  text-align: center;
+}
+
+.about-body h2 {
+  font-size: 1.5em;
+  font-weight: 800;
+}
+
+.about-body .boxed-list {
+  align-self: stretch;
+  margin: 8px 0;
+}
+
+.about-body .boxed-list:not(:has(:not([hidden]))) {
+  display: none;
+}
+
+.version {
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 0.9em;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-bg) 15%, transparent);
+}
+
+dialog.alert {
+  width: 372px;
+  box-sizing: border-box;
+  padding: 24px;
+  text-align: center;
+}
+
+.alert h2 {
+  font-size: 1.25em;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.alert p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.alert .responses {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 12px;
   margin-top: 24px;
 }
 

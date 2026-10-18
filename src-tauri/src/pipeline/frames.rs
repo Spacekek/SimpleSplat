@@ -129,7 +129,7 @@ pub(super) fn photos(folder: &Path, max: u32) -> Result<Vec<PathBuf>, String> {
         .collect();
     photos.sort();
     if photos.is_empty() {
-        return Err("No photos found in this folder (jpg, png, heic, webp, tif).".into());
+        return Err("No photos found in this folder (jpg, png, heic, webp, tif)".into());
     }
     let n = photos.len().min(max as usize);
     Ok((0..n)
