@@ -26,8 +26,10 @@ pub const STOPPED: &str = "Stopped.";
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    /// Frames taken from a video, or the most photos used from a folder.
+    /// The most images used: photos from a folder, or frames from a video.
     pub frames: u32,
+    /// Frames taken per second of video, between half of `frames` and `frames`.
+    pub fps: f32,
     pub steps: u32,
     pub max_size: u32,
     /// Steps between exports (previews). None: a fifth of the steps.
@@ -51,17 +53,20 @@ pub const LEVELS: [&str; 3] = ["off", "mild", "strong"];
 
 impl Settings {
     pub fn detail(name: &str) -> Option<Self> {
-        let (frames, steps, sfm_quality, max_splats) = match name {
+        // A video gives `fps` frames a second, but at least half of `frames` (short clips stay as
+        // dense as the old fixed counts, 100/150/300) and at most `frames` (long ones stay affordable).
+        let (frames, fps, steps, sfm_quality, max_splats) = match name {
             // Spirula adds at most about 10% splats per 100 steps until 2,500 before the end:
             // on the test video 5k steps ended at 58k splats, 10k at 670k (Brush's 5k: about 240k).
-            "low" => (100, 10_000, "low", 1_000_000),
-            "medium" => (150, 15_000, "medium", 1_000_000),
+            "low" => (200, 2.0, 10_000, "low", 1_000_000),
+            "medium" => (300, 3.0, 15_000, "medium", 1_000_000),
             // Spirula's own high preset; its low one (200k) saved Low no time, 5:04 for 5:19.
-            "high" => (300, 30_000, "high", 3_000_000),
+            "high" => (600, 5.0, 30_000, "high", 3_000_000),
             _ => return None,
         };
         Some(Self {
             frames,
+            fps,
             steps,
             max_size: 1600,
             export_every: None,
@@ -279,10 +284,11 @@ impl Job<'_> {
         } else {
             frames::photos(input, s.frames)?
         };
-        let n = if video {
-            s.frames as usize
+        let (n, secs) = if video {
+            let secs = frames::length(self, input)?;
+            (frames::video_frames(secs, s.fps, s.frames), secs)
         } else {
-            files.len()
+            (files.len(), 0.0)
         };
         let out = &mut Report::new(
             emit,
@@ -304,7 +310,7 @@ impl Job<'_> {
             "Preparing photos"
         };
         self.stage(1, label, "images", &frames_key, out, |job, dir, out| {
-            frames::run(job, &files, video, s, dir, out)
+            frames::run(job, &files, n, secs, s, dir, out)
         })?;
 
         let sfm_key = format!(

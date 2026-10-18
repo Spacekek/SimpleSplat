@@ -47,6 +47,7 @@ struct Request {
     detail: String,
     out_dir: Option<PathBuf>,
     frames: Option<u32>,
+    fps: Option<f32>,
     steps: Option<u32>,
     max_size: Option<u32>,
     export_every: Option<u32>,
@@ -63,6 +64,7 @@ struct Request {
 fn settings(request: &Request) -> Result<Settings, String> {
     let mut s = Settings::detail(&request.detail).ok_or("Unknown Detail setting")?;
     s.frames = request.frames.unwrap_or(s.frames);
+    s.fps = request.fps.unwrap_or(s.fps);
     s.steps = request.steps.unwrap_or(s.steps);
     s.max_size = request.max_size.unwrap_or(s.max_size);
     s.export_every = request.export_every;

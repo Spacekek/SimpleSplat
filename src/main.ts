@@ -25,6 +25,11 @@ const show = (view: View) => (document.body.dataset.view = view);
 const dirOf = (path: string) => path.replace(/[\\/][^\\/]*$/, "");
 const baseName = (path: string) => path.replace(/^.*[\\/]/, "");
 const dialog = (id: string) => $<HTMLDialogElement>(id);
+// Focus the dialog itself, as libadwaita does, rather than its first button (the close button).
+const openDialog = (id: string) => {
+  dialog(id).showModal();
+  dialog(id).focus();
+};
 const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
 // The header bars double as the title bar (tauri.macos/linux.conf.json). macOS keeps its own
@@ -161,7 +166,7 @@ renderDefaults();
 updateHome();
 updateFit();
 
-const openSettings = () => dialog("settings").showModal();
+const openSettings = () => openDialog("settings");
 $("open-settings").onclick = openSettings;
 $("close-settings").onclick = () => dialog("settings").close();
 // Enter in a field must not submit (and reload) the page.
@@ -191,7 +196,7 @@ $("menu-button").onclick = (e) => {
 document.addEventListener("click", () => setMenu(false));
 document.addEventListener("keydown", (e) => e.key === "Escape" && setMenu(false));
 $("menu-settings").onclick = openSettings;
-$("menu-about").onclick = () => dialog("about").showModal();
+$("menu-about").onclick = () => openDialog("about");
 $("close-about").onclick = () => dialog("about").close();
 getVersion()
   .then((v) => ($("about-version").textContent = v))
@@ -225,6 +230,7 @@ function request(input: string) {
     detail: v.detail,
     outDir: v.output === "folder" && v.outDir ? v.outDir : undefined,
     frames: num("frames"),
+    fps: num("fps"),
     steps: num("steps"),
     maxSize: num("maxSize"),
     exportEvery: num("exportEvery"),
@@ -328,11 +334,12 @@ async function begin(path: string) {
   invoke("start", { request: request(path) }).catch((err) => fail(String(err)));
 }
 
-// Time left, counted down between progress events.
+// The expected finish, as a time of day.
 let finishAt = 0;
 function showTimeLeft() {
   const secs = (finishAt - Date.now()) / 1000;
-  $("time-left").textContent = !finishAt ? "" : secs < 60 ? " · less than a minute left" : ` · about ${plural(Math.round(secs / 60), "minute")} left`;
+  const at = new Date(finishAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("time-left").textContent = !finishAt ? "" : secs < 60 ? " · almost ready" : ` · ready around ${at}`;
 }
 setInterval(showTimeLeft, 1000);
 

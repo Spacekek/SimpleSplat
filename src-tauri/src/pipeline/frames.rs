@@ -1,7 +1,7 @@
 //! Stage 1: the video's sharpest frames, or the photos, as upright SDR JPEGs of at most
 //! `max_size` pixels in `images/`.
 
-use super::{Job, Report, Settings};
+use super::{Event, Job, Report, Settings};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,11 +12,25 @@ const PHOTO_EXTS: [&str; 8] = ["jpg", "jpeg", "png", "heic", "heif", "webp", "ti
 
 const UNREADABLE: &str = "Couldn't read the input. Use a common video format (mp4, mov) or a folder of photos (jpg, png, heic).";
 
-/// `files` is the video, or the photos to use.
+/// How many frames a video of `secs` gives: `fps` a second, but at least half of `max` (short
+/// videos stay dense) and at most `max` (long ones stay affordable).
+pub(super) fn video_frames(secs: f64, fps: f32, max: u32) -> usize {
+    ((secs * fps as f64).round() as usize).clamp(max as usize / 2, max as usize)
+}
+
+/// A video's length in seconds.
+pub(super) fn length(job: &mut Job<'_>, input: &Path) -> Result<f64, String> {
+    // Without an output, ffmpeg describes the input (its duration included) and fails.
+    let probe = job.capture(job.cmd("ffmpeg").arg("-hide_banner").arg("-i").arg(input))?;
+    duration(&probe).ok_or_else(|| UNREADABLE.to_string())
+}
+
+/// `files` is the video (`n` frames from its `secs` seconds), or the photos to use (`secs` 0).
 pub(super) fn run(
     job: &mut Job<'_>,
     files: &[PathBuf],
-    video: bool,
+    n: usize,
+    secs: f64,
     s: &Settings,
     dir: &Path,
     out: &mut Report<'_>,
@@ -29,14 +43,19 @@ pub(super) fn run(
         m = s.max_size
     );
     let unreadable = |_| UNREADABLE.to_string();
-    if video {
+    if secs > 0.0 {
         let input = &files[0];
-        // Without an output, ffmpeg describes the input (its duration included) and fails.
-        let probe = job.capture(job.cmd("ffmpeg").arg("-hide_banner").arg("-i").arg(input))?;
-        let duration = duration(&probe).ok_or_else(|| UNREADABLE.to_string())?;
+        if (n as f64) < secs {
+            out.event(Event::Info {
+                text: format!(
+                    "A long video: about one frame every {:.0} seconds. If the result has holes, raise Max Images.",
+                    secs / n as f64
+                ),
+            });
+        }
         // Candidates at CANDIDATES times the frame rate (never above the source's: the fps filter
         // would repeat frames), each scored by blurdetect; the sharpest of each group is kept.
-        let candidates = CANDIDATES * s.frames as usize;
+        let candidates = CANDIDATES * n;
         let mut ffmpeg = job.cmd("ffmpeg");
         ffmpeg
             .args(["-hide_banner", "-loglevel", "error", "-i"])
@@ -46,7 +65,7 @@ pub(super) fn run(
                 "-vf",
                 &format!(
                     "fps='min(source_fps,{})',{scale},blurdetect,metadata=print:key=lavfi.blur:file='pipe\\:1'",
-                    candidates as f64 / duration
+                    candidates as f64 / secs
                 ),
                 "-q:v",
                 "2",
@@ -66,7 +85,7 @@ pub(super) fn run(
         if blur.len() != count {
             blur = vec![0.0; count]; // no scores: evenly spaced frames
         }
-        let keep = sharpest(&blur, s.frames as usize);
+        let keep = sharpest(&blur, n);
         let mut kept = 0;
         for i in 0..count {
             if keep.get(kept) == Some(&i) {
@@ -184,6 +203,22 @@ mod tests {
         assert_eq!(names(10), ["a.JPG", "b.png", "c.heic", "d.jpg", "e.jpg"]);
         assert_eq!(names(2), ["a.JPG", "c.heic"]);
         fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn frames_per_second_with_a_floor_and_a_cap() {
+        // Medium: 3 a second, at least 150, at most 300.
+        assert_eq!(
+            video_frames(20.0, 3.0, 300),
+            150,
+            "a short clip keeps the floor"
+        );
+        assert_eq!(video_frames(70.0, 3.0, 300), 210);
+        assert_eq!(
+            video_frames(600.0, 3.0, 300),
+            300,
+            "a long video stops at the cap"
+        );
     }
 
     #[test]

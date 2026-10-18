@@ -76,7 +76,7 @@
           <div class="title">Making Splat</div>
           <div class="subtitle"><span id="project-name"></span><span id="time-left"></span></div>
         </div>
-        <div class="end"><button id="stop" class="btn flat icon-label" title="Stop making the splat"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg><span id="stop-label">Stop</span></button></div>
+        <div class="end"><button id="stop" class="btn icon-label" title="Stop making the splat"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg><span id="stop-label">Stop</span></button></div>
       </header>
       <div class="progress-body">
         <div id="preview" class="preview">
@@ -97,11 +97,11 @@
       <div id="viewer-host"></div>
       <div class="osd-bar" data-tauri-drag-region="deep">
         <div class="start"><button id="new" class="btn osd pill icon-label"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10.5 2.5 5 8l5.5 5.5 1.06-1.06L7.12 8l4.44-4.44z" fill="currentColor"/></svg><span>New Splat</span></button></div>
-        <div class="end"><button id="reveal" class="btn osd pill">Show in Folder</button></div>
+        <div class="end"><button id="reveal" class="btn osd pill icon-label"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M1.5 4.5v8.25c0 .41.34.75.75.75h11.5c.41 0 .75-.34.75-.75V6.25a.75.75 0 0 0-.75-.75H8L6.5 3.5H2.25a.75.75 0 0 0-.75.75z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>Show in Folder</span></button></div>
       </div>
     </section>
 
-    <dialog id="settings" class="dialog" aria-labelledby="settings-title" autofocus>
+    <dialog id="settings" class="dialog" aria-labelledby="settings-title" tabindex="-1">
       <header class="headerbar">
         <div class="start"></div>
         <div class="window-title"><div class="title" id="settings-title">Settings</div></div>
@@ -134,7 +134,8 @@
         <div class="group">
           <h3 class="group-title">Images</h3>
           <div class="boxed-list">
-            <label class="row"><div class="row-text"><div class="title">Images to Use</div><div class="subtitle">Frames from a video, or at most this many photos</div><div class="subtitle defaults" data-for="frames"></div></div><div class="spin"><input type="number" name="frames" min="10" data-step="10" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
+            <label class="row"><div class="row-text"><div class="title">Max Images</div><div class="subtitle">Photos from a folder, or frames from a video (at least half this many)</div><div class="subtitle defaults" data-for="frames"></div></div><div class="spin"><input type="number" name="frames" min="10" data-step="10" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
+            <label class="row"><div class="row-text"><div class="title">Frames per Second</div><div class="subtitle">Taken from a video, within Max Images</div><div class="subtitle defaults" data-for="fps"></div></div><div class="spin"><input type="number" name="fps" min="0.5" step="any" data-step="1" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
             <label class="row"><div class="row-text"><div class="title">Max Image Size</div><div class="subtitle">Pixels on the long side</div><div class="subtitle defaults" data-for="maxSize"></div></div><div class="spin"><input type="number" name="maxSize" min="200" data-step="100" /><button type="button" class="btn flat circular" data-step="-1" aria-label="Less">−</button><button type="button" class="btn flat circular" data-step="1" aria-label="More">+</button></div></label>
             <label class="row"><div class="row-text"><div class="title">Single Camera</div><div class="subtitle">Whether every image shares one lens</div><div class="subtitle defaults" data-for="singleCamera"></div></div><select name="singleCamera"><option value="">Auto</option><option value="true">Yes</option><option value="false">No</option></select></label>
             <label class="row"><div class="row-text"><div class="title">Camera Position Quality</div><div class="subtitle">Higher is more precise and slower</div><div class="subtitle defaults" data-for="sfmQuality"></div></div><select name="sfmQuality"><option value="">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
@@ -177,7 +178,7 @@
       </div>
     </dialog>
 
-    <dialog id="about" class="dialog about" aria-labelledby="about-name" autofocus>
+    <dialog id="about" class="dialog about" aria-labelledby="about-name" tabindex="-1">
       <header class="headerbar">
         <div class="start"></div>
         <div class="end"><button type="button" id="close-about" class="btn flat circular" title="Close" aria-label="Close"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4.5 4.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>

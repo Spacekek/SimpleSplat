@@ -626,7 +626,7 @@ dialog {
   max-height: calc(100vh - 24px);
 }
 
-/* Opening one focuses the dialog itself (autofocus), as libadwaita does, not its close button. */
+/* Opening one focuses the dialog itself, as libadwaita does, not its close button. */
 dialog:focus {
   outline: none;
 }
