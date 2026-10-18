@@ -43,14 +43,13 @@
               <label><input type="radio" name="detail" value="high" form="settings-form" /><span>High</span></label>
             </div>
           </div>
-          <p id="detail-text" class="caption dim"></p>
           <p id="gpu-warning" class="caption warn" role="status" hidden></p>
         </div>
         <div class="buttons">
           <button id="choose-video" class="btn pill suggested">Choose Video…</button>
           <button id="choose-folder" class="btn pill">Choose Photo Folder…</button>
         </div>
-        <p class="caption"><span id="where" class="dim"></span> <button type="button" id="settings-link" class="link">Settings</button></p>
+        <button type="button" id="custom-link" class="link caption" hidden></button>
 
         <div id="update" class="banner" hidden>
           <div>
@@ -72,7 +71,7 @@
             <button id="error-close" class="btn flat">Dismiss</button>
           </div>
         </div>
-        <p class="caption dim">Or drop it here. Drop a finished <code>.ply</code> to view it.</p>
+        <p class="caption dim">Or drop a video, a photo folder or a finished <code>.ply</code> here.</p>
       </div>
     </section>
 
@@ -121,7 +120,7 @@
         <div class="end"></div>
       </header>
       <form id="settings-form" class="content clamp">
-        <p class="intro caption dim">Detail is chosen on the start screen; now <strong id="current-detail"></strong>. An empty field or Auto takes that level's default, listed under each setting.</p>
+        <p class="intro caption"><span class="dim">Defaults follow the Detail chosen on the start screen, now <strong id="current-detail"></strong>.</span> <span id="gpu-fit" class="dim"></span></p>
 
         <div class="group">
           <h3 class="group-title">Results</h3>
@@ -150,14 +149,14 @@
             <label class="row"><div class="row-text"><div class="title">Images to Use</div><div class="subtitle">Frames from a video, or at most this many photos</div><div class="subtitle defaults" data-for="frames"></div></div><input type="number" name="frames" min="10" /></label>
             <label class="row"><div class="row-text"><div class="title">Max Image Size</div><div class="subtitle">Pixels on the long side</div><div class="subtitle defaults" data-for="maxSize"></div></div><input type="number" name="maxSize" min="200" /></label>
             <label class="row"><div class="row-text"><div class="title">Single Camera</div><div class="subtitle">Whether every image shares one lens</div><div class="subtitle defaults" data-for="singleCamera"></div></div><select name="singleCamera"><option value="">Auto</option><option value="true">Yes</option><option value="false">No</option></select></label>
-            <label class="row"><div class="row-text"><div class="title">Camera Position Quality</div><div class="subtitle">Finding where each image was taken: higher is more precise and slower</div><div class="subtitle defaults" data-for="sfmQuality"></div></div><select name="sfmQuality"><option value="">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+            <label class="row"><div class="row-text"><div class="title">Camera Position Quality</div><div class="subtitle">Higher is more precise and slower</div><div class="subtitle defaults" data-for="sfmQuality"></div></div><select name="sfmQuality"><option value="">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
           </div>
         </div>
 
         <div class="group">
           <h3 class="group-title">Training</h3>
           <div class="boxed-list">
-            <label class="row"><div class="row-text"><div class="title">Training Steps</div><div class="subtitle">More steps refine the splat further</div><div class="subtitle defaults" data-for="steps"></div></div><input type="number" name="steps" min="100" /></label>
+            <label class="row"><div class="row-text"><div class="title">Training Steps</div><div class="subtitle defaults" data-for="steps"></div></div><input type="number" name="steps" min="100" /></label>
             <label class="row"><div class="row-text"><div class="title">Max Splats</div><div class="subtitle">More splats hold more detail, and need more GPU memory</div><div class="subtitle defaults" data-for="maxSplats"></div></div><input type="number" name="maxSplats" min="10000" /></label>
             <label class="row"><div class="row-text"><div class="title">Floater Suppression</div><div class="subtitle">Cleans up floating blobs and see-through surfaces</div><div class="subtitle defaults" data-for="floaterSuppression"></div></div><select name="floaterSuppression"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select></label>
             <label class="row"><div class="row-text"><div class="title">Ignore Moving Things</div><div class="subtitle">People, cars and anything else that moves between images</div><div class="subtitle defaults" data-for="ignoreMoving"></div></div><select name="ignoreMoving"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select></label>

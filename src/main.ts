@@ -87,7 +87,12 @@ function renderDefaults() {
     const name = el.dataset.for!;
     const all = presets.map((p) => shown(name, raw(name, p)));
     el.replaceChildren();
-    if (all.every((v) => v === all[0])) el.append(`Default for every Detail level: ${all[0]}`);
+    const input = form.elements.namedItem(name);
+    const value = raw(name, presets[current]);
+    // The same at every level: a field's placeholder or an Auto option already says it; a switch can't.
+    const same = all.every((v) => v === all[0]);
+    el.hidden = same && !(input instanceof HTMLInputElement && input.type === "checkbox");
+    if (same) el.append(`Default: ${all[0]}`);
     else if (all.every((v, i) => v === cap(LEVELS[i]))) el.append("Default: the same as Detail");
     else {
       el.append("Default: ");
@@ -96,8 +101,6 @@ function renderDefaults() {
         el.append(Object.assign(document.createElement(i === current ? "strong" : "span"), { textContent: `${cap(LEVELS[i])} ${v}` }));
       });
     }
-    const input = form.elements.namedItem(name);
-    const value = raw(name, presets[current]);
     if (input instanceof HTMLInputElement && input.type === "number") input.placeholder = grouped(Number(value));
     // Single Camera's Auto depends on the input, not on Detail, so its text stays short.
     if (input instanceof HTMLSelectElement) input.options[0].text = value === null ? "Auto" : `Auto (${shown(name, value)})`;
@@ -119,20 +122,19 @@ async function updateFit() {
   } catch {}
 }
 
-// The home screen: what the chosen Detail means with any custom settings, and where results go.
+// The home screen shows only what needs attention: a GPU memory warning, and what differs from the defaults.
 function updateHome() {
   const v = values();
-  const p = presets[level()];
-  const num = (k: string) => Number(v[k] || p?.[k]);
-  $("detail-text").textContent = !p
-    ? ""
-    : `${grouped(num("frames"))} images · ${grouped(num("steps"))} training steps · up to ${shown("maxSplats", num("maxSplats"))} splats` +
-      (fit?.gpu ? ` · about ${fit.need} of ${(fit.gpu.mib / 1024).toFixed(1)} GB GPU memory` : "");
   const warning = !fit ? "" : (fit.warning ?? (fit.gpu ? "" : "No supported GPU found. SimpleSplat needs Vulkan, or Metal on macOS."));
   Object.assign($("gpu-warning"), { textContent: warning, hidden: !warning });
+  // Settings shows the estimate either way.
+  $("gpu-fit").textContent = warning || (fit?.gpu ? `About ${fit.need} of the ${(fit.gpu.mib / 1024).toFixed(1)} GB GPU memory on ${fit.gpu.name}.` : "");
+  $("gpu-fit").classList.toggle("warn", !!warning);
+  $("gpu-fit").classList.toggle("dim", !warning);
+  // Only what differs from the defaults: custom settings, and a chosen output folder.
   const n = customCount();
-  const where = v.output === "folder" && v.outDir ? `Saved in ${baseName(String(v.outDir))}` : "Saved next to the input";
-  $("where").textContent = `${where}${n ? ` · ${n} custom setting${n > 1 ? "s" : ""}` : ""} ·`;
+  const parts = [n ? `${n} custom setting${n > 1 ? "s" : ""}` : "", v.output === "folder" && v.outDir ? `saved in ${baseName(String(v.outDir))}` : ""].filter(Boolean);
+  Object.assign($("custom-link"), { textContent: cap(parts.join(" · ")), hidden: !parts.length });
 }
 
 function onSettingsChange() {
@@ -158,7 +160,7 @@ renderDefaults();
 updateHome();
 updateFit();
 
-$("open-settings").onclick = $("settings-link").onclick = () => show("settings");
+$("open-settings").onclick = $("custom-link").onclick = () => show("settings");
 $("close-settings").onclick = () => show("home");
 $("choose-out").onclick = async () => {
   const dir = await open({ directory: true });
@@ -236,21 +238,17 @@ $("new").onclick = () => {
   show("home");
 };
 
-// Progress: one step per pipeline stage (with the tool behind it), side by side, filled in as events arrive.
-const STAGES = [
-  ["Preparing images", "ffmpeg"],
-  ["Finding camera positions", "Spirula"],
-  ["Training the splat", "Spirula"],
-];
+// Progress: one step per pipeline stage, side by side, filled in as events arrive.
+const STAGES = ["Preparing images", "Finding camera positions", "Training the splat"];
 const row = (n: number) => $("stages").querySelector<HTMLElement>(`li[data-n="${n}"]`);
 function renderStages() {
   $("stages").replaceChildren(
-    ...STAGES.map(([name, tool], i) => {
+    ...STAGES.map((name, i) => {
       const li = document.createElement("li");
       li.dataset.n = String(i + 1);
       li.className = "step";
       li.dataset.state = "pending";
-      li.innerHTML = `<div class="step-head"><span class="status"></span><span class="label">${name}</span><span class="tool">${tool}</span></div><progress max="1" value="0"></progress><div class="caption what"></div><div class="caption details"></div>`;
+      li.innerHTML = `<div class="step-head"><span class="status"></span><span class="label">${name}</span></div><progress max="1" value="0"></progress><div class="caption what"></div><div class="caption details"></div>`;
       return li;
     }),
   );

@@ -634,16 +634,6 @@ li[data-state="pending"] .step-head {
   opacity: 0.55;
 }
 
-.tool {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: 9999px;
-  font-size: 0.75em;
-  font-weight: 700;
-  background: var(--fill);
-  vertical-align: 1px;
-}
-
 progress {
   display: block;
   width: 100%;
