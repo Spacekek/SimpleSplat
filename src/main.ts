@@ -131,10 +131,9 @@ function updateHome() {
   $("gpu-fit").textContent = warning || (fit?.gpu ? `About ${fit.need} of the ${(fit.gpu.mib / 1024).toFixed(1)} GB GPU memory on ${fit.gpu.name}.` : "");
   $("gpu-fit").classList.toggle("warn", !!warning);
   $("gpu-fit").classList.toggle("dim", !warning);
-  // Only what differs from the defaults: custom settings, and a chosen output folder.
+  // The Settings button also says what differs from the defaults: custom settings, a chosen output folder.
   const n = customCount();
-  const parts = [n ? `${n} custom setting${n > 1 ? "s" : ""}` : "", v.output === "folder" && v.outDir ? `saved in ${baseName(String(v.outDir))}` : ""].filter(Boolean);
-  Object.assign($("custom-link"), { textContent: cap(parts.join(" · ")), hidden: !parts.length });
+  $("settings-label").textContent = ["Settings", n ? `${n} custom` : "", v.output === "folder" && v.outDir ? `saved in ${baseName(String(v.outDir))}` : ""].filter(Boolean).join(" · ");
 }
 
 function onSettingsChange() {
@@ -160,7 +159,7 @@ renderDefaults();
 updateHome();
 updateFit();
 
-$("open-settings").onclick = $("custom-link").onclick = () => show("settings");
+$("open-settings").onclick = () => show("settings");
 $("close-settings").onclick = () => show("home");
 $("choose-out").onclick = async () => {
   const dir = await open({ directory: true });
