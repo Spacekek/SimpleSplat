@@ -15,6 +15,13 @@ const FIXED_MIB: f64 = 300.0;
 const BYTES_PER_SPLAT: f64 = 450.0;
 const BYTES_PER_PIXEL: f64 = 100.0;
 
+/// Peak memory of SfM: a fixed part and the features. Measured as the peak footprint of `spirula
+/// sfm auto` on 1600 px frames (on a Mac that includes its GPU memory; elsewhere it is an upper
+/// bound): 0.81 GiB for 150 at medium (614k features), 1.02 for 150 at high (1.09M) and 1.60 for
+/// 300 at high (2.17M). The presets fill nearly every image to their feature limit.
+const SFM_FIXED_MIB: f64 = 460.0;
+const BYTES_PER_FEATURE: f64 = 570.0;
+
 #[derive(Clone, Serialize)]
 pub struct Gpu {
     pub name: String,
@@ -68,20 +75,40 @@ fn parse(text: &str) -> Option<Gpu> {
     })
 }
 
-/// Estimated peak GPU memory of training with `s`, in MiB.
-pub fn need_mib(s: &Settings) -> u64 {
+/// The stage of a run with `s` that needs the most GPU memory: its estimated peak in MiB, its
+/// name, and the settings that lower it.
+pub fn need(s: &Settings) -> (u64, &'static str, &'static str) {
+    let features = match s.sfm_quality {
+        "low" => 2048.0,
+        "high" => 8192.0,
+        _ => 4096.0,
+    } * s.frames as f64;
+    let sfm = SFM_FIXED_MIB + features * BYTES_PER_FEATURE / 1048576.0;
     let pixels = (s.max_size as f64).powi(2) * 0.75; // a 4:3 image, the larger of the usual shapes
-    (FIXED_MIB + (s.max_splats as f64 * BYTES_PER_SPLAT + pixels * BYTES_PER_PIXEL) / 1048576.0)
-        as u64
+    let train =
+        FIXED_MIB + (s.max_splats as f64 * BYTES_PER_SPLAT + pixels * BYTES_PER_PIXEL) / 1048576.0;
+    if sfm > train {
+        (
+            sfm as u64,
+            "Finding camera positions",
+            "Images to Use or Camera Position Quality",
+        )
+    } else {
+        (
+            train as u64,
+            "Training",
+            "Max Splats, Max Image Size or Detail",
+        )
+    }
 }
 
-/// A warning when training with `s` may not fit on `gpu` (the last tenth is kept free for the
-/// display and other programs).
+/// A warning when a run with `s` may not fit on `gpu` (the last tenth is kept free for the display
+/// and other programs).
 pub fn warning(s: &Settings, gpu: &Gpu) -> Option<String> {
-    let need = need_mib(s);
+    let (need, stage, lower) = need(s);
     (need * 10 > gpu.mib * 9).then(|| {
         format!(
-            "This run may need about {} of GPU memory, and {} has {}. If it fails, lower Max Splats, Max Image Size or Detail.",
+            "{stage} may need about {} of GPU memory, and {} has {}. If it fails, lower {lower}.",
             gb(need),
             gpu.name,
             gb(gpu.mib)
@@ -114,10 +141,16 @@ mod tests {
         );
         assert!(parse("No Vulkan devices found.").is_none());
 
+        // High: SfM about 1.8 GB (measured 1.6), training 1.7 GB.
         let mut s = Settings::detail("high").unwrap();
-        assert!(warning(&s, &gpu).is_none(), "{}", need_mib(&s));
+        assert_eq!(need(&s).1, "Finding camera positions");
+        assert!(warning(&s, &gpu).is_none(), "{}", need(&s).0);
         s.max_splats = 100_000_000;
-        assert!(warning(&s, &gpu).unwrap().contains("RTX 3060 has 12.0 GB"));
+        let text = warning(&s, &gpu).unwrap();
+        assert!(text.starts_with("Training may need") && text.contains("RTX 3060 has 12.0 GB"));
+        s.max_splats = 1_000_000;
+        s.frames = 5000;
+        assert!(warning(&s, &gpu).unwrap().contains("lower Images to Use"));
     }
 
     #[test]

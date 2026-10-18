@@ -110,7 +110,7 @@ async fn estimate(state: State<'_, AppState>, request: Request) -> Result<Fit, S
         .get_or_init(|| gpu::detect(state.tools.as_deref()))
         .clone();
     Ok(Fit {
-        need: gpu::gb(gpu::need_mib(&s)),
+        need: gpu::gb(gpu::need(&s).0),
         warning: found.as_ref().and_then(|g| gpu::warning(&s, g)),
         gpu: found,
     })
