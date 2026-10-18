@@ -12,7 +12,7 @@
       <header class="headerbar" data-tauri-drag-region="deep">
         <div class="start"></div>
         <div class="end">
-          <button id="open-settings" class="btn flat circular" title="Preferences" aria-label="Preferences">
+          <button id="open-settings" class="btn flat circular" title="Settings" aria-label="Settings">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -34,11 +34,23 @@
         </svg>
         <h1>SimpleSplat</h1>
         <p class="description">Turn a video or a folder of photos into a 3D scene you can look around in.</p>
+        <div class="detail-picker">
+          <div class="detail-row">
+            <span class="detail-label">Detail</span>
+            <div class="toggle-group" role="radiogroup" aria-label="Detail">
+              <label><input type="radio" name="detail" value="low" form="settings-form" /><span>Low</span></label>
+              <label><input type="radio" name="detail" value="medium" form="settings-form" checked /><span>Medium</span></label>
+              <label><input type="radio" name="detail" value="high" form="settings-form" /><span>High</span></label>
+            </div>
+          </div>
+          <p id="detail-text" class="caption dim"></p>
+          <p id="gpu-warning" class="caption warn" role="status" hidden></p>
+        </div>
         <div class="buttons">
           <button id="choose-video" class="btn pill suggested">Choose Video…</button>
           <button id="choose-folder" class="btn pill">Choose Photo Folder…</button>
         </div>
-        <button id="summary" class="btn flat small"></button>
+        <p class="caption"><span id="where" class="dim"></span> <button type="button" id="settings-link" class="link">Settings</button></p>
 
         <div id="update" class="banner" hidden>
           <div>
@@ -72,24 +84,20 @@
           <div class="subtitle"><span id="project-name"></span><span id="time-left"></span></div>
         </div>
         <div class="end"><button id="stop" class="btn destructive">Stop</button></div>
-        <progress id="overall" max="1" hidden></progress>
       </header>
-      <div class="content columns">
-        <div>
-          <h3 class="group-title">Progress</h3>
-          <ol id="stages" class="boxed-list" aria-live="polite"></ol>
-        </div>
-        <div>
-          <h3 class="group-title">Preview</h3>
-          <div id="preview" class="card preview">
-            <canvas id="preview-canvas" width="800" height="450"></canvas>
-            <p id="preview-empty" class="preview-empty dim">A preview appears here once training is under way.</p>
-            <div id="explore-host"></div>
-            <button id="explore" class="btn osd overlay" hidden>Explore</button>
+      <div class="progress-body">
+        <div id="preview" class="preview">
+          <canvas id="preview-canvas" width="800" height="450"></canvas>
+          <p id="preview-empty" class="preview-empty dim">A preview appears here once training is under way.</p>
+          <div id="explore-host"></div>
+          <div class="explore-bar">
+            <p id="explore-note" class="osd-label" hidden>Training is slower while you explore</p>
+            <button id="explore" class="btn osd pill" hidden>Explore</button>
           </div>
-          <p id="explore-note" class="caption dim" hidden>Training is slower while you explore.</p>
         </div>
+        <p id="notes" class="notes caption" role="status" hidden></p>
       </div>
+      <ol id="stages" class="steps" aria-live="polite"></ol>
     </section>
 
     <section id="viewer">
@@ -109,32 +117,11 @@
             </svg>
           </button>
         </div>
-        <div class="window-title"><div class="title">Preferences</div></div>
+        <div class="window-title"><div class="title">Settings</div></div>
         <div class="end"></div>
       </header>
       <form id="settings-form" class="content clamp">
-        <div class="group">
-          <h3 class="group-title">Quality</h3>
-          <div class="boxed-list">
-            <div class="row">
-              <div class="row-text">
-                <div class="title">Detail</div>
-                <div class="subtitle">More detail looks better and takes longer</div>
-              </div>
-              <div class="toggle-group">
-                <label><input type="radio" name="detail" value="low" /><span>Low</span></label>
-                <label><input type="radio" name="detail" value="medium" checked /><span>Medium</span></label>
-                <label><input type="radio" name="detail" value="high" /><span>High</span></label>
-              </div>
-            </div>
-            <div class="row">
-              <div class="row-text">
-                <div class="title">GPU Memory</div>
-                <div id="gpu-fit" class="subtitle">Checking the GPU…</div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <p class="intro caption dim">Detail is chosen on the start screen; now <strong id="current-detail"></strong>. An empty field or Auto takes that level's default, listed under each setting.</p>
 
         <div class="group">
           <h3 class="group-title">Results</h3>
@@ -157,38 +144,36 @@
           </div>
         </div>
 
-        <details class="group">
-          <summary class="group-title">Advanced</summary>
+        <div class="group">
+          <h3 class="group-title">Images</h3>
           <div class="boxed-list">
-            <label class="row"><div class="row-text"><div class="title">Images to Use</div><div class="subtitle">Frames from a video, or at most this many photos</div></div><input type="number" name="frames" min="10" placeholder="Auto" /></label>
-            <label class="row"><div class="row-text"><div class="title">Max Image Size</div><div class="subtitle">Pixels on the long side</div></div><input type="number" name="maxSize" min="200" placeholder="1600" /></label>
-            <label class="row"><div class="row-text"><div class="title">Training Steps</div></div><input type="number" name="steps" min="100" placeholder="Auto" /></label>
-            <label class="row"><div class="row-text"><div class="title">Preview Every</div><div class="subtitle">Training steps between previews</div></div><input type="number" name="exportEvery" min="100" placeholder="Auto" /></label>
-            <label class="row">
-              <div class="row-text"><div class="title">Single Camera</div><div class="subtitle">Auto: yes for video, no for photos</div></div>
-              <select name="singleCamera">
-                <option value="">Auto</option>
-                <option value="true">Yes</option>
-                <option value="false">No</option>
-              </select>
-            </label>
-            <label class="row">
-              <div class="row-text"><div class="title">Camera Position Quality</div><div class="subtitle">Finding where each frame was taken: higher is more precise and slower. Auto follows Detail</div></div>
-              <select name="sfmQuality"><option value="">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
-            </label>
-            <label class="row"><div class="row-text"><div class="title">Max Splats</div><div class="subtitle">Auto: 1 million, 3 million at High detail</div></div><input type="number" name="maxSplats" min="10000" placeholder="Auto" /></label>
-            <label class="row">
-              <div class="row-text"><div class="title">Floater Suppression</div><div class="subtitle">Cleans up floating blobs and see-through surfaces. Auto: off</div></div>
-              <select name="floaterSuppression"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select>
-            </label>
-            <label class="row">
-              <div class="row-text"><div class="title">Ignore Moving Things</div><div class="subtitle">People, cars and anything else that moves between frames. Auto: off</div></div>
-              <select name="ignoreMoving"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select>
-            </label>
-            <label class="row"><div class="row-text"><div class="title">Exposure Correction</div><div class="subtitle">Evens out brightness and colour changes between frames</div></div><input type="checkbox" class="switch" name="exposureCorrection" checked /></label>
-            <label class="row"><div class="row-text"><div class="title">Keep Intermediate Files</div><div class="subtitle">Makes re-runs faster</div></div><input type="checkbox" class="switch" name="keepIntermediates" checked /></label>
+            <label class="row"><div class="row-text"><div class="title">Images to Use</div><div class="subtitle">Frames from a video, or at most this many photos</div><div class="subtitle defaults" data-for="frames"></div></div><input type="number" name="frames" min="10" /></label>
+            <label class="row"><div class="row-text"><div class="title">Max Image Size</div><div class="subtitle">Pixels on the long side</div><div class="subtitle defaults" data-for="maxSize"></div></div><input type="number" name="maxSize" min="200" /></label>
+            <label class="row"><div class="row-text"><div class="title">Single Camera</div><div class="subtitle">Whether every image shares one lens</div><div class="subtitle defaults" data-for="singleCamera"></div></div><select name="singleCamera"><option value="">Auto</option><option value="true">Yes</option><option value="false">No</option></select></label>
+            <label class="row"><div class="row-text"><div class="title">Camera Position Quality</div><div class="subtitle">Finding where each image was taken: higher is more precise and slower</div><div class="subtitle defaults" data-for="sfmQuality"></div></div><select name="sfmQuality"><option value="">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
           </div>
-        </details>
+        </div>
+
+        <div class="group">
+          <h3 class="group-title">Training</h3>
+          <div class="boxed-list">
+            <label class="row"><div class="row-text"><div class="title">Training Steps</div><div class="subtitle">More steps refine the splat further</div><div class="subtitle defaults" data-for="steps"></div></div><input type="number" name="steps" min="100" /></label>
+            <label class="row"><div class="row-text"><div class="title">Max Splats</div><div class="subtitle">More splats hold more detail, and need more GPU memory</div><div class="subtitle defaults" data-for="maxSplats"></div></div><input type="number" name="maxSplats" min="10000" /></label>
+            <label class="row"><div class="row-text"><div class="title">Floater Suppression</div><div class="subtitle">Cleans up floating blobs and see-through surfaces</div><div class="subtitle defaults" data-for="floaterSuppression"></div></div><select name="floaterSuppression"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select></label>
+            <label class="row"><div class="row-text"><div class="title">Ignore Moving Things</div><div class="subtitle">People, cars and anything else that moves between images</div><div class="subtitle defaults" data-for="ignoreMoving"></div></div><select name="ignoreMoving"><option value="">Auto</option><option value="off">Off</option><option value="mild">Mild</option><option value="strong">Strong</option></select></label>
+            <label class="row"><div class="row-text"><div class="title">Exposure Correction</div><div class="subtitle">Evens out brightness and colour changes between images</div><div class="subtitle defaults" data-for="exposureCorrection"></div></div><input type="checkbox" class="switch" name="exposureCorrection" checked /></label>
+            <label class="row"><div class="row-text"><div class="title">Preview Every</div><div class="subtitle">Training steps between previews</div><div class="subtitle defaults" data-for="exportEvery"></div></div><input type="number" name="exportEvery" min="100" /></label>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3 class="group-title">Files</h3>
+          <div class="boxed-list">
+            <label class="row"><div class="row-text"><div class="title">Keep Intermediate Files</div><div class="subtitle">Makes re-runs faster</div><div class="subtitle defaults" data-for="keepIntermediates"></div></div><input type="checkbox" class="switch" name="keepIntermediates" checked /></label>
+          </div>
+        </div>
+
+        <div class="reset"><button type="button" id="reset" class="btn">Reset to Defaults</button></div>
       </form>
     </section>
 

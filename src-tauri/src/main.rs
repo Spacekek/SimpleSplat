@@ -116,6 +116,12 @@ async fn estimate(state: State<'_, AppState>, request: Request) -> Result<Fit, S
     })
 }
 
+/// Each Detail preset's settings, Low to High: the defaults the UI shows.
+#[tauri::command]
+fn defaults() -> [Settings; 3] {
+    ["low", "medium", "high"].map(|d| Settings::detail(d).expect("a preset"))
+}
+
 #[tauri::command]
 fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(), String> {
     let s = settings(&request)?;
@@ -293,6 +299,7 @@ fn main() -> ExitCode {
             start,
             stop,
             allow_folder,
+            defaults,
             estimate
         ]);
     // macOS's own Quit (Cmd+Q) ends the app at once; this one asks first while a job runs.

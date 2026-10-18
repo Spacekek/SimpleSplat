@@ -40,7 +40,8 @@ if (platform === "linux") {
   }
 }
 
-// Settings: the form is the source of truth, remembered between launches.
+// Settings: the form is the source of truth, remembered between launches. Detail's radios sit on the
+// home screen, tied to the form by their form attribute.
 const form = $<HTMLFormElement>("settings-form");
 const fields = () => [...form.elements].filter((el): el is HTMLInputElement => "name" in el && !!(el as HTMLInputElement).name);
 try {
@@ -60,41 +61,120 @@ function values(): Record<string, string | boolean> {
   }
   return v;
 }
-let mayNotFit = false;
-function updateSummary() {
-  const v = values();
-  const detail = String(v.detail).replace(/^./, (c) => c.toUpperCase());
-  const where = v.output === "folder" && v.outDir ? `saved in ${baseName(String(v.outDir))}` : "saved next to the input";
-  $("summary").textContent = `${detail} detail · ${where}${mayNotFit ? " · may not fit in GPU memory" : ""}`;
+
+// Each Detail level's settings (pipeline::Settings, Low to High): what Auto and empty fields take.
+type Preset = Record<string, string | number | boolean | null>;
+const LEVELS = ["low", "medium", "high"];
+let presets: Preset[] = [];
+const level = () => Math.max(0, LEVELS.indexOf(String(values().detail)));
+const cap = (text: string) => text.replace(/^./, (c) => c.toUpperCase());
+const grouped = (n: number) => n.toLocaleString("en-US");
+const NOT_ADVANCED = ["detail", "output", "outDir"];
+// A preset's value of a setting, and how it reads.
+const raw = (name: string, p: Preset) => (name === "exportEvery" ? (p.exportEvery ?? Number(p.steps) / 5) : p[name]);
+function shown(name: string, value: Preset[string]): string {
+  if (name === "singleCamera" && value === null) return "Yes for video, no for photos";
+  if (name === "maxSplats") return `${Number(value) / 1e6} million`;
+  if (typeof value === "boolean") return value ? "On" : "Off";
+  if (typeof value === "number") return grouped(value) + (name === "maxSize" ? " px" : "");
+  return cap(String(value));
 }
+function renderDefaults() {
+  const current = level();
+  $("current-detail").textContent = cap(LEVELS[current]);
+  if (!presets.length) return;
+  for (const el of document.querySelectorAll<HTMLElement>("[data-for]")) {
+    const name = el.dataset.for!;
+    const all = presets.map((p) => shown(name, raw(name, p)));
+    el.replaceChildren();
+    if (all.every((v) => v === all[0])) el.append(`Default for every Detail level: ${all[0]}`);
+    else if (all.every((v, i) => v === cap(LEVELS[i]))) el.append("Default: the same as Detail");
+    else {
+      el.append("Default: ");
+      all.forEach((v, i) => {
+        if (i) el.append(" · ");
+        el.append(Object.assign(document.createElement(i === current ? "strong" : "span"), { textContent: `${cap(LEVELS[i])} ${v}` }));
+      });
+    }
+    const input = form.elements.namedItem(name);
+    const value = raw(name, presets[current]);
+    if (input instanceof HTMLInputElement && input.type === "number") input.placeholder = grouped(Number(value));
+    // Single Camera's Auto depends on the input, not on Detail, so its text stays short.
+    if (input instanceof HTMLSelectElement) input.options[0].text = value === null ? "Auto" : `Auto (${shown(name, value)})`;
+  }
+}
+// Advanced settings changed from their default.
+function customCount() {
+  const p = presets[level()];
+  return fields().filter((el) => !NOT_ADVANCED.includes(el.name) && (el.type === "checkbox" ? p && el.checked !== p[el.name] : el.value !== "")).length;
+}
+
 // What a run with these settings needs of the GPU's memory (the backend asks Spirula for the GPU once).
 type Fit = { gpu?: { name: string; mib: number }; need: string; warning?: string };
+let fit: Fit | null = null;
 async function updateFit() {
   try {
-    const fit = await invoke<Fit>("estimate", { request: request("") });
-    $("gpu-fit").textContent = fit.warning ?? (fit.gpu ? `About ${fit.need} of ${(fit.gpu.mib / 1024).toFixed(1)} GB on ${fit.gpu.name}` : "No supported GPU found (Spirula needs Vulkan, or Metal on macOS)");
-    $("gpu-fit").classList.toggle("warn", !!fit.warning || !fit.gpu);
-    mayNotFit = !!fit.warning || !fit.gpu;
-    updateSummary();
+    fit = await invoke<Fit>("estimate", { request: request("") });
+    updateHome();
   } catch {}
 }
-updateSummary();
-updateFit();
-form.addEventListener("change", () => {
-  updateSummary();
+
+// The home screen: what the chosen Detail means with any custom settings, and where results go.
+function updateHome() {
+  const v = values();
+  const p = presets[level()];
+  const num = (k: string) => Number(v[k] || p?.[k]);
+  $("detail-text").textContent = !p
+    ? ""
+    : `${grouped(num("frames"))} images · ${grouped(num("steps"))} training steps · up to ${shown("maxSplats", num("maxSplats"))} splats` +
+      (fit?.gpu ? ` · about ${fit.need} of ${(fit.gpu.mib / 1024).toFixed(1)} GB GPU memory` : "");
+  const warning = !fit ? "" : (fit.warning ?? (fit.gpu ? "" : "No supported GPU found. SimpleSplat needs Vulkan, or Metal on macOS."));
+  Object.assign($("gpu-warning"), { textContent: warning, hidden: !warning });
+  const n = customCount();
+  const where = v.output === "folder" && v.outDir ? `Saved in ${baseName(String(v.outDir))}` : "Saved next to the input";
+  $("where").textContent = `${where}${n ? ` · ${n} custom setting${n > 1 ? "s" : ""}` : ""} ·`;
+}
+
+function onSettingsChange() {
+  renderDefaults();
+  updateHome();
   updateFit();
   try {
     localStorage.setItem("settings", JSON.stringify(values()));
   } catch {}
+}
+// Detail's radios are outside the form, so listen on the document.
+document.addEventListener("change", (e) => {
+  if ((e.target as HTMLInputElement).form === form) onSettingsChange();
 });
-$("open-settings").onclick = $("summary").onclick = () => show("settings");
+invoke<Preset[]>("defaults")
+  .then((p) => {
+    presets = p;
+    renderDefaults();
+    updateHome();
+  })
+  .catch(() => {});
+renderDefaults();
+updateHome();
+updateFit();
+
+$("open-settings").onclick = $("settings-link").onclick = () => show("settings");
 $("close-settings").onclick = () => show("home");
 $("choose-out").onclick = async () => {
   const dir = await open({ directory: true });
   if (typeof dir !== "string") return;
   (form.elements.namedItem("outDir") as HTMLInputElement).value = dir;
   (form.elements.namedItem("output") as RadioNodeList).value = "folder";
-  form.dispatchEvent(new Event("change"));
+  onSettingsChange();
+};
+$("reset").onclick = () => {
+  const p = presets[level()];
+  for (const el of fields()) {
+    if (NOT_ADVANCED.includes(el.name)) continue;
+    if (el.type === "checkbox") el.checked = Boolean(p?.[el.name] ?? true);
+    else el.value = "";
+  }
+  onSettingsChange();
 };
 
 function request(input: string) {
@@ -156,7 +236,7 @@ $("new").onclick = () => {
   show("home");
 };
 
-// Progress: one row per pipeline stage (with the tool behind it), filled in as events arrive.
+// Progress: one step per pipeline stage (with the tool behind it), side by side, filled in as events arrive.
 const STAGES = [
   ["Preparing images", "ffmpeg"],
   ["Finding camera positions", "Spirula"],
@@ -168,16 +248,17 @@ function renderStages() {
     ...STAGES.map(([name, tool], i) => {
       const li = document.createElement("li");
       li.dataset.n = String(i + 1);
-      li.className = "row";
+      li.className = "step";
       li.dataset.state = "pending";
-      li.innerHTML = `<span class="status"></span><div class="row-text"><div class="title"><span class="label">${name}</span><span class="tool">${tool}</span></div><div class="subtitle"></div><div class="meter" hidden><progress max="1"></progress><div class="caption"></div></div></div>`;
+      li.innerHTML = `<div class="step-head"><span class="status"></span><span class="label">${name}</span><span class="tool">${tool}</span></div><progress max="1" value="0"></progress><div class="caption what"></div><div class="caption details"></div>`;
       return li;
     }),
   );
 }
 function addDetail(li: HTMLElement | null, text: string) {
-  li?.querySelector(".subtitle")!.append(Object.assign(document.createElement("div"), { textContent: text }));
+  li?.querySelector(".details")!.append(Object.assign(document.createElement("div"), { textContent: text }));
 }
+const setBar = (li: HTMLElement, fraction: number) => (li.querySelector("progress")!.value = fraction);
 
 let projectDir = "";
 let latestPreview = "";
@@ -192,7 +273,6 @@ async function begin(path: string) {
   closeViewer(); // a live viewer would slow training down
   // Nothing else checks the advanced fields' limits: the form is never submitted.
   if (!form.checkValidity()) {
-    form.querySelector("details")!.open = true;
     show("settings");
     form.reportValidity();
     return;
@@ -200,8 +280,8 @@ async function begin(path: string) {
   projectDir = latestPreview = "";
   finishAt = 0;
   showTimeLeft();
-  Object.assign($<HTMLProgressElement>("overall"), { hidden: true, value: 0 });
   renderStages();
+  Object.assign($("notes"), { textContent: "", hidden: true });
   $("project-name").textContent = baseName(path);
   $<HTMLCanvasElement>("preview-canvas").getContext("2d")!.clearRect(0, 0, 800, 450);
   $("preview-empty").hidden = false;
@@ -263,28 +343,34 @@ listen<JobEvent>("job", ({ payload: e }) => {
       if (!li) break;
       li.querySelector(".label")!.textContent = e.name;
       li.dataset.state = e.skipped ? "done" : "running";
-      if (e.skipped) addDetail(li, "Already done");
+      if (e.skipped) {
+        setBar(li, 1);
+        addDetail(li, "Already done");
+      }
       break;
     }
     case "stageDone": {
       const li = row(e.n);
       if (li) {
         li.dataset.state = "done";
-        li.querySelector<HTMLElement>(".meter")!.hidden = true;
+        setBar(li, 1);
+        li.querySelector(".what")!.textContent = "";
         addDetail(li, `Took ${e.secs < 90 ? `${e.secs} s` : `${Math.round(e.secs / 60)} min`}`);
       }
       break;
     }
-    case "info":
-      addDetail($("stages").querySelector<HTMLElement>('li[data-state="running"]'), e.text);
+    case "info": {
+      // Messages before the first stage (the GPU memory check) go above the steps.
+      const running = $("stages").querySelector<HTMLElement>('li[data-state="running"]');
+      if (running) addDetail(running, e.text);
+      else Object.assign($("notes"), { textContent: e.text, hidden: false });
       break;
+    }
     case "progress": {
-      const meter = row(e.n)?.querySelector<HTMLElement>(".meter");
-      if (!meter) break;
-      meter.hidden = false;
-      meter.querySelector("progress")!.value = e.fraction;
-      meter.querySelector(".caption")!.textContent = e.what;
-      Object.assign($<HTMLProgressElement>("overall"), { hidden: false, value: e.overall });
+      const li = row(e.n);
+      if (!li) break;
+      setBar(li, e.fraction);
+      li.querySelector(".what")!.textContent = e.what;
       finishAt = Date.now() + e.eta * 1000;
       showTimeLeft();
       break;

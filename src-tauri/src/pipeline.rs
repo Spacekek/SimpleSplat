@@ -21,6 +21,10 @@ use std::time::{Duration, Instant, SystemTime};
 pub const STAGES: usize = 3;
 pub const STOPPED: &str = "Stopped.";
 
+/// What a run uses: a Detail preset, with any advanced overrides. The UI shows each preset's values
+/// as the defaults, so this is their one source.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// Frames taken from a video, or the most photos used from a folder.
     pub frames: u32,
@@ -64,7 +68,8 @@ impl Settings {
             single_camera: None,
             sfm_quality,
             max_splats,
-            floater_suppression: "off",
+            // Better on every score in the settings tests, for 8% more training time.
+            floater_suppression: "mild",
             ignore_moving: "off",
             exposure_correction: true,
             keep_intermediates: true,
