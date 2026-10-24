@@ -100,17 +100,13 @@ def fetch(name: str, url: str, sha256: str, member: str) -> Path:
     return exe
 
 
-def notices(manifest: Path, out: Path) -> None:
-    """Licenses of the Rust crates compiled into `manifest`'s program, written to `out` by cargo-about."""
-    about = ROOT / "scripts"
-    run("cargo", "about", "generate", "-c", about / "about.toml", "--manifest-path", manifest, about / "about.hbs", "-o", out)
-
-
 def main() -> None:
     if sys.argv[1:] == ["--app-notices"]:  # run by every release build, since the app's crates change
         out = OUT / "THIRD_PARTY_LICENSES" / "simplesplat"
         out.mkdir(parents=True, exist_ok=True)
-        notices(ROOT / "src-tauri" / "Cargo.toml", out / "crates.txt")
+        # Licenses of the Rust crates compiled into the app, by cargo-about.
+        about = ROOT / "scripts"
+        run("cargo", "about", "generate", "-c", about / "about.toml", "--manifest-path", ROOT / "src-tauri" / "Cargo.toml", about / "about.hbs", "-o", out / "crates.txt")
         # The 3D viewer's JavaScript, which ships inside the app.
         for license in (ROOT / "src" / "vendor").glob("*/LICENSE"):
             shutil.copy2(license, out / f"{license.parent.name}-LICENSE.txt")

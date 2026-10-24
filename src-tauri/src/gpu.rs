@@ -1,6 +1,6 @@
 //! The GPU Spirula trains on, and whether a run's memory fits on it.
 
-use crate::pipeline::{Settings, tool};
+use crate::pipeline::{Quality, Settings, tool};
 use serde::Serialize;
 use std::path::Path;
 
@@ -79,9 +79,9 @@ fn parse(text: &str) -> Option<Gpu> {
 /// name, and the settings that lower it.
 pub fn need(s: &Settings) -> (u64, &'static str, &'static str) {
     let features = match s.sfm_quality {
-        "low" => 2048.0,
-        "high" => 8192.0,
-        _ => 4096.0,
+        Quality::Low => 2048.0,
+        Quality::Medium => 4096.0,
+        Quality::High => 8192.0,
     } * s.frames as f64;
     let sfm = SFM_FIXED_MIB + features * BYTES_PER_FEATURE / 1048576.0;
     let pixels = (s.max_size as f64).powi(2) * 0.75; // a 4:3 image, the larger of the usual shapes

@@ -14,11 +14,10 @@ const $ = (id) => document.getElementById(id);
 const show = (view) => (document.body.dataset.view = view); // "home", "progress" or "viewer"
 const dirOf = (path) => path.replace(/[\\/][^\\/]*$/, "");
 const baseName = (path) => path.replace(/^.*[\\/]/, "");
-const dialog = (id) => $(id);
 // Focus the dialog itself, as libadwaita does, rather than its first button (the close button).
 const openDialog = (id) => {
-  dialog(id).showModal();
-  dialog(id).focus();
+  $(id).showModal();
+  $(id).focus();
 };
 const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
@@ -149,15 +148,15 @@ invoke("defaults")
     presets = p;
     renderDefaults();
     updateHome();
+    updateFit(); // it sends a preset's settings
   })
   .catch(() => {});
 renderDefaults();
 updateHome();
-updateFit();
 
 const openSettings = () => openDialog("settings");
 $("open-settings").onclick = openSettings;
-$("close-settings").onclick = () => dialog("settings").close();
+$("close-settings").onclick = () => $("settings").close();
 // Enter in a field must not submit (and reload) the page.
 form.addEventListener("submit", (e) => e.preventDefault());
 
@@ -189,7 +188,7 @@ document.addEventListener("click", () => setMenu(false));
 document.addEventListener("keydown", (e) => e.key === "Escape" && setMenu(false));
 $("menu-settings").onclick = openSettings;
 $("menu-about").onclick = () => openDialog("about");
-$("close-about").onclick = () => dialog("about").close();
+$("close-about").onclick = () => $("about").close();
 getVersion()
   .then((v) => ($("about-version").textContent = v))
   .catch(() => {});
@@ -215,13 +214,11 @@ $("reset").onclick = () => {
   onSettingsChange();
 };
 
+// The Detail level's settings with the advanced ones changed from it (pipeline::Settings).
 function request(input) {
   const v = values();
   const num = (k) => (v[k] ? Number(v[k]) : undefined);
-  return {
-    input,
-    detail: v.detail,
-    outDir: v.output === "folder" && v.outDir ? v.outDir : undefined,
+  const changed = {
     frames: num("frames"),
     fps: num("fps"),
     steps: num("steps"),
@@ -234,6 +231,12 @@ function request(input) {
     ignoreMoving: v.ignoreMoving || undefined,
     exposureCorrection: v.exposureCorrection,
     keepIntermediates: v.keepIntermediates,
+  };
+  return {
+    ...presets[level()],
+    ...Object.fromEntries(Object.entries(changed).filter(([, value]) => value !== undefined)),
+    input,
+    outDir: v.output === "folder" && v.outDir ? v.outDir : undefined,
   };
 }
 
@@ -300,7 +303,7 @@ let latestPreview = "";
 let explorer = null;
 
 async function begin(path) {
-  dialog("error").close();
+  $("error").close();
   if (path.toLowerCase().endsWith(".ply")) {
     await invoke("allow_folder", { path });
     return openViewer(path, dirOf(path));
@@ -344,10 +347,10 @@ function fail(message) {
   errorLog = logPath.trim();
   $("error-text").textContent = text;
   $("error-log").hidden = !errorLog;
-  dialog("error").showModal();
+  $("error").showModal();
   show("home");
 }
-$("error-close").onclick = () => dialog("error").close();
+$("error-close").onclick = () => $("error").close();
 
 // Update notice: a release build compares its version with the repository's latest release.
 const newer = (a, b) => {

@@ -9,7 +9,7 @@ mod frames;
 mod sfm;
 mod train;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -22,8 +22,8 @@ pub const STAGES: usize = 3;
 pub const STOPPED: &str = "Stopped.";
 
 /// What a run uses: a Detail preset, with any advanced overrides. The UI shows each preset's values
-/// as the defaults, so this is their one source.
-#[derive(Serialize)]
+/// as the defaults, so this is their one source, and sends them back with its overrides applied.
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// The most images used: photos from a folder, or frames from a video.
@@ -36,20 +36,46 @@ pub struct Settings {
     pub export_every: Option<u32>,
     /// None: one camera for video, one per photo otherwise.
     pub single_camera: Option<bool>,
-    /// Spirula's SfM preset: low, medium or high (image size, features, pairs).
-    pub sfm_quality: &'static str,
+    /// Spirula's SfM preset (image size, features, pairs).
+    pub sfm_quality: Quality,
     /// The most splats training may grow to.
     pub max_splats: u32,
-    /// Spirula's floater suppression and distraction robustness: off, mild or strong.
-    pub floater_suppression: &'static str,
-    pub ignore_moving: &'static str,
+    /// Spirula's floater suppression and distraction robustness.
+    pub floater_suppression: Level,
+    pub ignore_moving: Level,
     /// Per-frame exposure and colour correction (PPISP and a bilateral grid).
     pub exposure_correction: bool,
     pub keep_intermediates: bool,
 }
 
-/// The values of Settings' off/mild/strong levels.
-pub const LEVELS: [&str; 3] = ["off", "mild", "strong"];
+// Passed on to Spirula as arguments, so only its own values get through.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Quality {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Off,
+    Mild,
+    Strong,
+}
+
+impl Quality {
+    pub fn arg(self) -> &'static str {
+        ["low", "medium", "high"][self as usize]
+    }
+}
+
+impl Level {
+    pub fn arg(self) -> &'static str {
+        ["off", "mild", "strong"][self as usize]
+    }
+}
 
 impl Settings {
     pub fn detail(name: &str) -> Option<Self> {
@@ -58,10 +84,10 @@ impl Settings {
         let (frames, fps, steps, sfm_quality, max_splats) = match name {
             // Spirula adds at most about 10% splats per 100 steps until 2,500 before the end:
             // on the test video 5k steps ended at 58k splats, 10k at 670k (Brush's 5k: about 240k).
-            "low" => (200, 2.0, 10_000, "low", 1_000_000),
-            "medium" => (300, 3.0, 15_000, "medium", 1_000_000),
+            "low" => (200, 2.0, 10_000, Quality::Low, 1_000_000),
+            "medium" => (300, 3.0, 15_000, Quality::Medium, 1_000_000),
             // Spirula's own high preset; its low one (200k) saved Low no time, 5:04 for 5:19.
-            "high" => (600, 5.0, 30_000, "high", 3_000_000),
+            "high" => (600, 5.0, 30_000, Quality::High, 3_000_000),
             _ => return None,
         };
         Some(Self {
@@ -74,8 +100,8 @@ impl Settings {
             sfm_quality,
             max_splats,
             // Better on every score in the settings tests, for 8% more training time.
-            floater_suppression: "mild",
-            ignore_moving: "off",
+            floater_suppression: Level::Mild,
+            ignore_moving: Level::Off,
             exposure_correction: true,
             keep_intermediates: true,
         })
@@ -315,7 +341,7 @@ impl Job<'_> {
 
         let sfm_key = format!(
             "{frames_key} | spirula sfm video={video} single_camera={single_camera} quality={} up=-y",
-            s.sfm_quality
+            s.sfm_quality.arg()
         );
         self.stage(
             2,
@@ -328,7 +354,11 @@ impl Job<'_> {
 
         let train_key = format!(
             "{sfm_key} | spirula train steps={} splats={} floaters={} moving={} exposure={}",
-            s.steps, s.max_splats, s.floater_suppression, s.ignore_moving, s.exposure_correction
+            s.steps,
+            s.max_splats,
+            s.floater_suppression.arg(),
+            s.ignore_moving.arg(),
+            s.exposure_correction
         );
         self.stage(
             3,

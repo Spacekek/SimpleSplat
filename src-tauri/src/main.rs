@@ -5,7 +5,7 @@ mod gpu;
 mod pipeline;
 
 use clap::Parser;
-use pipeline::{Control, Event, LEVELS, Settings};
+use pipeline::{Control, Event, Settings};
 use serde::Deserialize;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -39,60 +39,14 @@ struct AppState {
     gpu: OnceLock<Option<gpu::Gpu>>,
 }
 
-/// What the UI asks for: a Detail preset plus optional advanced overrides.
+/// What the UI asks for: a Detail preset's settings with its advanced overrides applied.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Request {
     input: PathBuf,
-    detail: String,
     out_dir: Option<PathBuf>,
-    frames: Option<u32>,
-    fps: Option<f32>,
-    steps: Option<u32>,
-    max_size: Option<u32>,
-    export_every: Option<u32>,
-    single_camera: Option<bool>,
-    sfm_quality: Option<String>,
-    max_splats: Option<u32>,
-    floater_suppression: Option<String>,
-    ignore_moving: Option<String>,
-    exposure_correction: Option<bool>,
-    keep_intermediates: Option<bool>,
-}
-
-/// The settings a request asks for.
-fn settings(request: &Request) -> Result<Settings, String> {
-    let mut s = Settings::detail(&request.detail).ok_or("Unknown Detail setting")?;
-    s.frames = request.frames.unwrap_or(s.frames);
-    s.fps = request.fps.unwrap_or(s.fps);
-    s.steps = request.steps.unwrap_or(s.steps);
-    s.max_size = request.max_size.unwrap_or(s.max_size);
-    s.export_every = request.export_every;
-    s.single_camera = request.single_camera;
-    s.max_splats = request.max_splats.unwrap_or(s.max_splats);
-    // Passed on to Spirula as arguments, so only its own values get through.
-    let level = |value: Option<&str>, default| match value {
-        None => Ok(default),
-        Some(v) => LEVELS
-            .into_iter()
-            .find(|l| *l == v)
-            .ok_or(format!("Unknown setting: {v}")),
-    };
-    s.floater_suppression = level(
-        request.floater_suppression.as_deref(),
-        s.floater_suppression,
-    )?;
-    s.sfm_quality = match request.sfm_quality.as_deref() {
-        None => s.sfm_quality,
-        Some(q) => ["low", "medium", "high"]
-            .into_iter()
-            .find(|l| *l == q)
-            .ok_or(format!("Unknown setting: {q}"))?,
-    };
-    s.ignore_moving = level(request.ignore_moving.as_deref(), s.ignore_moving)?;
-    s.exposure_correction = request.exposure_correction.unwrap_or(s.exposure_correction);
-    s.keep_intermediates = request.keep_intermediates.unwrap_or(s.keep_intermediates);
-    Ok(s)
+    #[serde(flatten)]
+    settings: Settings,
 }
 
 /// The GPU, and the memory a run with `request` would need on it.
@@ -106,7 +60,7 @@ struct Fit {
 
 #[tauri::command]
 async fn estimate(state: State<'_, AppState>, request: Request) -> Result<Fit, String> {
-    let s = settings(&request)?;
+    let s = request.settings;
     let found = state
         .gpu
         .get_or_init(|| gpu::detect(state.tools.as_deref()))
@@ -132,8 +86,6 @@ fn repo() -> &'static str {
 
 #[tauri::command]
 fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(), String> {
-    let s = settings(&request)?;
-
     let mut job = state.job.lock().unwrap();
     if job.is_some() {
         return Err("A splat is already being made".into());
@@ -145,7 +97,7 @@ fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(),
         let result = pipeline::run(
             &request.input,
             request.out_dir.as_deref(),
-            &s,
+            &request.settings,
             tools.as_deref(),
             &control,
             &mut |event| {
@@ -214,15 +166,8 @@ fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
                 eta,
                 what,
             } => {
-                let bar: String = (0..20)
-                    .map(|i| {
-                        if (i as f64) < fraction * 20.0 {
-                            '#'
-                        } else {
-                            '.'
-                        }
-                    })
-                    .collect();
+                let full = (fraction * 20.0).ceil() as usize; // fraction is 0 to 1
+                let bar = "#".repeat(full) + &".".repeat(20 - full);
                 let line = format!(
                     "      {bar} {what}  {:.0}% in all, {} left",
                     overall * 100.0,

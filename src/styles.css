@@ -8,7 +8,6 @@
   --fg: rgb(0 0 6 / 0.8);
   --accent-bg: #3584e4;
   --accent: #1c71d8;
-  --destructive-bg: #e01b24;
   --error: #c01c28;
   --border: rgb(0 0 6 / 0.12);
   --shade: rgb(0 0 6 / 0.07);
@@ -42,7 +41,6 @@
     --card-bg: rgb(255 255 255 / 0.08);
     --fg: #ffffff;
     --accent: #78aeed;
-    --destructive-bg: #c01c28;
     --error: #ff7b63;
     --border: rgb(255 255 255 / 0.12);
     --shade: rgb(0 0 6 / 0.36);
@@ -227,30 +225,16 @@ body[data-platform="mac"] > section .start {
   border-radius: 9999px;
 }
 
-.btn.small {
-  min-height: 0;
-  padding: 3px 10px;
-  font-size: 0.9em;
-  font-weight: 400;
-}
-
 .btn.suggested {
   background: var(--accent-bg);
   color: white;
 }
 
-.btn.destructive {
-  background: var(--destructive-bg);
-  color: white;
-}
-
-.btn.suggested:hover,
-.btn.destructive:hover {
+.btn.suggested:hover {
   filter: brightness(1.08);
 }
 
-.btn.suggested:active,
-.btn.destructive:active {
+.btn.suggested:active {
   filter: brightness(0.9);
 }
 

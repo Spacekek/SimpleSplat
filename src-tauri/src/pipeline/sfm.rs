@@ -1,7 +1,7 @@
 //! Stage 2: camera positions from Spirula's SfM in `sparse/0`, turned upright (up = -Y), and
 //! `view.json`, the viewer's first camera.
 
-use super::{Event, Job, Report, spirula_hint};
+use super::{Event, Job, Quality, Report, spirula_hint};
 use std::fs;
 use std::path::Path;
 
@@ -9,7 +9,7 @@ pub(super) fn run(
     job: &mut Job<'_>,
     video: bool,
     single_camera: bool,
-    quality: &str,
+    quality: Quality,
     sparse: &Path,
     out: &mut Report<'_>,
 ) -> Result<(), String> {
@@ -28,7 +28,7 @@ pub(super) fn run(
         "--data-type",
         if video { "video" } else { "individual" },
         "--quality",
-        quality,
+        quality.arg(),
         "--camera-mode",
         if single_camera { "single" } else { "image" },
     ]);
@@ -62,17 +62,10 @@ pub(super) fn run(
             });
         }
     }
-    write_view(&job.project, &model);
-    Ok(())
-}
-
-/// Writes view.json: the first frame's camera in viewer coordinates, aimed at the scene.
-fn write_view(project: &Path, model: &Path) {
-    let view = model_text(model)
-        .and_then(|(cameras, images, points)| first_frame_view(&cameras, &images, &points));
-    if let Some(view) = view {
-        let _ = fs::write(project.join("view.json"), view);
+    if let Some(view) = first_frame_view(&model) {
+        let _ = fs::write(job.project.join("view.json"), view);
     }
+    Ok(())
 }
 
 /// Step (0 features, 1 matching, 2 model), its fraction done and what it is busy with, from Spirula
@@ -98,18 +91,18 @@ fn progress(line: &str, total: usize) -> Option<(usize, f64, &'static str)> {
 }
 
 /// Seconds on an Apple M5 for SfM with `n` images at `quality`.
-pub(super) fn estimate(n: usize, quality: &str) -> f64 {
+pub(super) fn estimate(n: usize, quality: Quality) -> f64 {
     estimates(n, quality).iter().sum()
 }
 
 /// Seconds on an Apple M5 for Spirula SfM's features, matching and model with `n` images, from
 /// the 150-frame test video at each preset (matching is almost all of it).
 // ponytail: photos assumed to cost what video frames do; measure a photo set
-fn estimates(n: usize, quality: &str) -> [f64; 3] {
+fn estimates(n: usize, quality: Quality) -> [f64; 3] {
     let per_image = match quality {
-        "low" => [0.02, 0.6, 0.025],
-        "high" => [0.045, 2.6, 0.05],
-        _ => [0.035, 1.43, 0.06],
+        Quality::Low => [0.02, 0.6, 0.025],
+        Quality::Medium => [0.035, 1.43, 0.06],
+        Quality::High => [0.045, 2.6, 0.05],
     };
     per_image.map(|secs| secs * n as f64)
 }
@@ -218,76 +211,42 @@ fn upright(model: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// COLMAP model ids: name and parameter count.
-const CAMERA_MODELS: [(&str, usize); 12] = [
-    ("SIMPLE_PINHOLE", 3),
-    ("PINHOLE", 4),
-    ("SIMPLE_RADIAL", 4),
-    ("RADIAL", 5),
-    ("OPENCV", 8),
-    ("OPENCV_FISHEYE", 8),
-    ("FULL_OPENCV", 12),
-    ("FOV", 5),
-    ("SIMPLE_RADIAL_FISHEYE", 4),
-    ("RADIAL_FISHEYE", 5),
-    ("THIN_PRISM_FISHEYE", 12),
-    ("RAD_TAN_THIN_PRISM_FISHEYE", 16),
-];
+/// Parameter counts of COLMAP's camera models, by model id.
+const PARAMS: [usize; 12] = [3, 4, 4, 5, 8, 8, 12, 5, 4, 5, 12, 16];
 
-/// The binary model as the rows of COLMAP's text format (cameras, images, points), as far as
-/// first_frame_view reads them. Spirula's SfM writes only the binary format.
-fn model_text(model: &Path) -> Option<(String, String, String)> {
+/// cameras.bin: camera `id`'s image height and focal length (fy).
+fn camera_record(data: &[u8], id: u32) -> Option<(f64, f64)> {
+    let mut r = Bin(data, 0);
+    for _ in 0..r.u64()? {
+        let (this, model) = (r.u32()?, r.u32()? as usize);
+        r.skip(8)?; // width
+        let height = r.u64()? as f64;
+        let params = r.1;
+        r.skip(8 * PARAMS.get(model)?)?;
+        if this == id {
+            // Models with one focal length (SIMPLE_*, RADIAL, RADIAL_FISHEYE) list it first; the
+            // others list fx, then fy.
+            let fy = usize::from(![0, 2, 3, 8, 9].contains(&model));
+            return Some((height, f64_at(data, params + 8 * fy)));
+        }
+    }
+    None
+}
+
+/// The first frame's camera as SuperSplat viewer settings JSON (view.json), aimed at the median
+/// depth of the scene in front of it. The viewer flips PLY data 180 degrees around Z, so x and y
+/// negate.
+fn first_frame_view(model: &Path) -> Option<String> {
     let read = |name: &str| fs::read(model.join(name)).ok();
     let (cameras, images, points) = (
         read("cameras.bin")?,
         read("images.bin")?,
         read("points3D.bin")?,
     );
-    let mut r = Bin(&cameras, 0);
-    let mut camera_rows = String::new();
-    for _ in 0..r.u64()? {
-        let (id, kind) = (r.u32()?, r.u32()? as usize);
-        let (width, height) = (r.u64()?, r.u64()?);
-        let (name, count) = CAMERA_MODELS.get(kind)?;
-        let params: Vec<String> = (0..*count)
-            .map(|_| r.take().map(|b| f64::from_le_bytes(b).to_string()))
-            .collect::<Option<_>>()?;
-        camera_rows += &format!("{id} {name} {width} {height} {}\n", params.join(" "));
-    }
-    let image_rows = image_records(&images)?
-        .iter()
-        .map(|(at, camera, name)| {
-            let pose: Vec<String> = (0..7)
-                .map(|i| f64_at(&images, at + 8 * i).to_string())
-                .collect();
-            format!("0 {} {camera} {name}\n", pose.join(" "))
-        })
-        .collect();
-    let point_rows = point_records(&points)?
-        .iter()
-        .map(|&at| {
-            let [x, y, z] = std::array::from_fn(|i| f64_at(&points, at + 8 * i));
-            format!("0 {x} {y} {z}\n")
-        })
-        .collect();
-    Some((camera_rows, image_rows, point_rows))
-}
-
-/// The first frame's camera as SuperSplat viewer settings JSON, aimed at the median depth of
-/// the scene in front of it. The viewer flips PLY data 180 degrees around Z, so x and y negate.
-fn first_frame_view(cameras: &str, images: &str, points: &str) -> Option<String> {
-    let rows = |text: &str| -> Vec<Vec<String>> {
-        text.lines()
-            .filter(|l| !l.starts_with('#'))
-            .map(|l| l.split_whitespace().map(String::from).collect())
-            .collect()
-    };
-    let num = |s: &String| s.parse::<f64>().ok();
-    let image = rows(images)
+    let (at, camera, _) = image_records(&images)?
         .into_iter()
-        .filter(|r| r.len() == 10)
-        .min_by(|a, b| a[9].cmp(&b[9]))?;
-    let [w, x, y, z, tx, ty, tz] = std::array::from_fn(|i| num(&image[i + 1]).unwrap_or(0.0));
+        .min_by(|a, b| a.2.cmp(&b.2))?;
+    let [w, x, y, z, tx, ty, tz] = std::array::from_fn(|i| f64_at(&images, at + 8 * i));
     let r = [
         [
             1. - 2. * (y * y + z * z),
@@ -309,24 +268,19 @@ fn first_frame_view(cameras: &str, images: &str, points: &str) -> Option<String>
     let center: [f64; 3] = std::array::from_fn(|c| -(0..3).map(|k| r[k][c] * t[k]).sum::<f64>());
     let forward = r[2];
 
-    let mut depths: Vec<f64> = rows(points)
+    let mut depths: Vec<f64> = point_records(&points)?
         .iter()
-        .filter_map(|p| Some([num(p.get(1)?)?, num(p.get(2)?)?, num(p.get(3)?)?]))
-        .map(|p| (0..3).map(|i| (p[i] - center[i]) * forward[i]).sum::<f64>())
+        .map(|&at| {
+            (0..3)
+                .map(|i| (f64_at(&points, at + 8 * i) - center[i]) * forward[i])
+                .sum::<f64>()
+        })
         .filter(|d| *d > 0.)
         .collect();
     depths.sort_by(f64::total_cmp);
     let depth = *depths.get(depths.len() / 2)?;
 
-    let camera = rows(cameras)
-        .into_iter()
-        .find(|c| c.first() == image.get(8))?;
-    let (height, params) = (num(camera.get(3)?)?, &camera[4..]);
-    let focal = if camera[1].starts_with("SIMPLE") || camera[1] == "RADIAL" {
-        num(params.first()?)?
-    } else {
-        num(params.get(1)?)?
-    };
+    let (height, focal) = camera_record(&cameras, camera)?;
     let fov = (2. * (height / 2. / focal).atan()).to_degrees();
     let flip = |v: [f64; 3]| format!("[{}, {}, {}]", -v[0], -v[1], v[2]);
     let target = std::array::from_fn(|i| center[i] + forward[i] * depth);
@@ -402,13 +356,19 @@ mod tests {
         fs::write(model.join("points3D.bin"), points).unwrap();
 
         upright(&model).unwrap();
-        let (cameras, images, points) = model_text(&model).unwrap();
+        let points = fs::read(model.join("points3D.bin")).unwrap();
+        let xyz: Vec<[f64; 3]> = point_records(&points)
+            .unwrap()
+            .iter()
+            .map(|&at| std::array::from_fn(|i| f64_at(&points, at + 8 * i)))
+            .collect();
         assert_eq!(
-            points, "0 0 -2 0\n0 0 -4 0\n0 0 -6 0\n",
+            xyz,
+            [[0., -2., 0.], [0., -4., 0.], [0., -6., 0.]],
             "up (+z) becomes -y"
         );
         // The camera still looks at the points: its view direction turned with them.
-        let view = first_frame_view(&cameras, &images, &points).unwrap();
+        let view = first_frame_view(&model).unwrap();
         let target: Vec<f64> = view
             .split("\"target\": [")
             .nth(1)
@@ -429,16 +389,5 @@ mod tests {
         );
         assert!(view.contains("\"fov\": 65.2"), "{view}");
         fs::remove_dir_all(&model).unwrap();
-    }
-
-    #[test]
-    fn first_frame_view_looks_from_frame_one_at_the_points() {
-        // Identity rotation at the origin looks down +z; points at depth 2, 4 and 6.
-        let cameras = "1 SIMPLE_RADIAL 720 1280 1000 360 640 0.01\n";
-        let images = "2 1 0 0 0 0 0 0 1 0002.jpg\n\n1 1 0 0 0 0 0 0 1 0001.jpg\n\n";
-        let points = "1 0 0 2 0 0 0 0\n2 0 0 4 0 0 0 0\n3 0 0 6 0 0 0 0\n4 0 0 -5 0 0 0 0\n";
-        let view = first_frame_view(cameras, images, points).unwrap();
-        assert!(view.contains("\"target\": [-0, -0, 4]"), "{view}");
-        assert!(view.contains("\"fov\": 65.2"), "{view}");
     }
 }

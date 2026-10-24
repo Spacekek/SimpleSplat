@@ -37,9 +37,9 @@ pub(super) fn run(
         "--cap-max",
         &s.max_splats.to_string(),
         "--floater-suppression",
-        s.floater_suppression,
+        s.floater_suppression.arg(),
         "--distraction-robustness",
-        s.ignore_moving,
+        s.ignore_moving.arg(),
         // The model is upright already, and the splats must stay in its frame.
         "--orientation-method",
         "none",

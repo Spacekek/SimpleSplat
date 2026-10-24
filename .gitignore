@@ -5,3 +5,4 @@ src-tauri/tools
 /*.mp4
 /*_splat/
 /result
+target
