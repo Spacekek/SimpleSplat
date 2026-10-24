@@ -6,3 +6,5 @@ src-tauri/tools
 /*_splat/
 /result
 target
+node_modules
+dist

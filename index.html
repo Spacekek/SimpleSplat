@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SimpleSplat</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <!-- Icons used in more than one place. The app (src/App.svelte) mounts after this. -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="icon-close" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></symbol>
+      <symbol id="app-icon" viewBox="0 0 64 64">
+        <defs>
+          <radialGradient id="sb"><stop offset="0" stop-color="#3584e4" /><stop offset="0.55" stop-color="#3584e4" stop-opacity="0.85" /><stop offset="1" stop-color="#3584e4" stop-opacity="0" /></radialGradient>
+          <radialGradient id="so"><stop offset="0" stop-color="#ff7800" /><stop offset="0.55" stop-color="#ff7800" stop-opacity="0.85" /><stop offset="1" stop-color="#ff7800" stop-opacity="0" /></radialGradient>
+          <radialGradient id="sg"><stop offset="0" stop-color="#33d17a" /><stop offset="0.55" stop-color="#33d17a" stop-opacity="0.85" /><stop offset="1" stop-color="#33d17a" stop-opacity="0" /></radialGradient>
+        </defs>
+        <ellipse cx="26" cy="30" rx="17" ry="12" transform="rotate(-25 26 30)" fill="url(#sb)" />
+        <ellipse cx="38" cy="28" rx="14" ry="9" transform="rotate(30 38 28)" fill="url(#so)" />
+        <ellipse cx="32" cy="41" rx="15" ry="8" transform="rotate(-5 32 41)" fill="url(#sg)" />
+      </symbol>
+    </svg>
+  </body>
+</html>

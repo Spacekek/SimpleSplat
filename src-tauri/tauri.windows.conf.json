@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "build": {
-    "beforeDevCommand": { "script": "python scripts/bundle_tools.py", "wait": true },
-    "beforeBuildCommand": "python scripts/bundle_tools.py && python scripts/bundle_tools.py --app-notices"
+    "beforeDevCommand": "python scripts/bundle_tools.py && npm run dev",
+    "beforeBuildCommand": "python scripts/bundle_tools.py && python scripts/bundle_tools.py --app-notices && npm run build"
   },
   "bundle": {
     "targets": [

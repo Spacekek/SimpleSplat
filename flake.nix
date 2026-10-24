@@ -47,16 +47,24 @@
         in
         {
           inherit spirula;
-          default = pkgs.rustPlatform.buildRustPackage {
+          default = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
             pname = "simplesplat";
             version = (lib.importTOML ./src-tauri/Cargo.toml).package.version;
             src = self;
             cargoRoot = "src-tauri";
             buildAndTestSubdir = "src-tauri";
             cargoLock.lockFile = ./src-tauri/Cargo.lock;
+            # The frontend's packages (package-lock.json). After changing them,
+            # `nix run nixpkgs#prefetch-npm-deps -- package-lock.json` gives the new hash.
+            npmDeps = pkgs.fetchNpmDeps {
+              inherit (finalAttrs) src;
+              hash = "sha256-rUfWmPaSnfAOJebEqFeDoAtGemipXnVD1Qui1j8pMvM=";
+            };
 
             nativeBuildInputs = [
               pkgs.cargo-tauri.hook
+              pkgs.nodejs
+              pkgs.npmHooks.npmConfigHook
               pkgs.pkg-config
               pkgs.wrapGAppsHook3
             ];
@@ -73,13 +81,14 @@
               "--config"
               (builtins.toFile "tauri.nix.json" (
                 builtins.toJSON {
-                  build.beforeBuildCommand = null;
+                  build.beforeBuildCommand = "npm run build";
                   bundle.resources = [ ];
                 }
               ))
             ];
 
-            # `cargo test` builds without the config above, so the resource folder must exist.
+            # `cargo test` builds without the config above, so the resource folder must exist (the
+            # frontend's dist/ does: the build made it).
             preCheck = "mkdir -p src-tauri/tools";
 
             meta = {
@@ -88,7 +97,7 @@
               mainProgram = "simplesplat";
               platforms = [ "x86_64-linux" ];
             };
-          };
+          });
         };
 
       devShells = forSystems (pkgs: {
@@ -101,6 +110,7 @@
               rustfmt
               clippy
               cargo-tauri # cargo tauri dev / build
+              nodejs # the frontend: Vite and Svelte (npm install)
               python3
               cargo-about # license notices for release builds
               pkg-config

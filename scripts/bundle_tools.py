@@ -107,9 +107,17 @@ def main() -> None:
         # Licenses of the Rust crates compiled into the app, by cargo-about.
         about = ROOT / "scripts"
         run("cargo", "about", "generate", "-c", about / "about.toml", "--manifest-path", ROOT / "src-tauri" / "Cargo.toml", about / "about.hbs", "-o", out / "crates.txt")
-        # The 3D viewer's JavaScript, which ships inside the app.
-        for license in (ROOT / "src" / "vendor").glob("*/LICENSE"):
-            shutil.copy2(license, out / f"{license.parent.name}-LICENSE.txt")
+        # The npm packages the app's JavaScript is built from (Svelte, the 3D viewer, and what they
+        # depend on; a little more than the bundle keeps). The first path is the app itself.
+        npm = subprocess.run([shutil.which("npm"), "ls", "--omit=dev", "--all", "--parseable"], cwd=ROOT, capture_output=True, text=True, check=True)
+        for package in map(Path, npm.stdout.split()[1:]):
+            name = package.relative_to(ROOT / "node_modules").as_posix().replace("/", "-")
+            license = next((f for f in sorted(package.iterdir()) if f.name.upper().startswith(("LICENSE", "LICENCE"))), None)
+            if license:
+                shutil.copy2(license, out / f"{name}-LICENSE.txt")
+            else:  # some packages only name their license
+                meta = json.loads((package / "package.json").read_text())
+                (out / f"{name}-LICENSE.txt").write_text(f"{meta['name']} {meta['version']}: {meta['license']} (the package has no license file)\n")
         return
     stamp = OUT / ".stamp"
     if stamp.exists() and stamp.read_text() == STAMP:
