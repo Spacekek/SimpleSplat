@@ -1,7 +1,8 @@
 //! Stage 1: the video's sharpest frames, or the photos, as upright SDR JPEGs of at most
 //! `max_size` pixels in `images/`.
 
-use super::{Event, Job, Report, Settings};
+use super::{Event, Job, Report};
+use crate::settings::Settings;
 use std::fs;
 use std::path::{Path, PathBuf};
 

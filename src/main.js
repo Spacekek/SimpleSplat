@@ -417,7 +417,7 @@ $("stop").onclick = () => {
   invoke("stop");
 };
 
-// A live viewer keeps rendering and slowed training by 16% in the spike, so previews are stills:
+// A live viewer keeps rendering, which slows training down, so previews are stills:
 // load the export off-screen, capture one frame, and tear the viewer down again.
 const previewCanvas = $("preview-canvas");
 let capturing = Promise.resolve();

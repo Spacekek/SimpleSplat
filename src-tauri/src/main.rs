@@ -1,34 +1,21 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod awake;
+mod cli;
 mod gpu;
 mod pipeline;
+mod settings;
 
-use clap::Parser;
-use pipeline::{Control, Detail, Event, Settings};
+use pipeline::{Control, Event};
 use serde::Deserialize;
-use std::io::{IsTerminal, Write};
+use settings::{Detail, Settings};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
-
-/// Turn a video or a folder of photos into a Gaussian splat, without opening a window.
-/// Run with no arguments to open the app instead.
-#[derive(Parser)]
-#[command(version)]
-struct Cli {
-    /// A video, or a folder of photos.
-    input: PathBuf,
-    /// More detail looks better and takes longer.
-    #[arg(long, value_enum, default_value_t = Detail::Medium)]
-    detail: Detail,
-    /// Folder for the results [default: next to the input].
-    #[arg(long, value_name = "DIR")]
-    out: Option<PathBuf>,
-}
 
 struct AppState {
     /// Bundled tools folder (resources/tools/bin), or None to use PATH.
@@ -141,89 +128,6 @@ fn allow_folder(app: AppHandle, path: PathBuf) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Headless run: `simplesplat <input> [--detail ...] [--out ...]`.
-fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
-    let settings = Settings::detail(args.detail);
-    // In a terminal, one progress line redrawn in place; otherwise a line per tenth of a stage.
-    let terminal = std::io::stdout().is_terminal();
-    let mut shown = None;
-    let print = &mut |event: Event| {
-        if terminal {
-            print!("\r{:79}\r", ""); // clear the progress line
-        }
-        match event {
-            Event::Project { path } => println!("Project folder: {}", path.display()),
-            Event::StageStart {
-                stage,
-                name,
-                skipped,
-            } => {
-                let done = if skipped { ": already done" } else { "" };
-                println!("[{}/{}] {name}{done}", stage + 1, pipeline::STAGES);
-            }
-            Event::StageDone { secs, .. } => println!("      done in {secs}s"),
-            Event::Info { text } => println!("      {text}"),
-            Event::Progress {
-                stage,
-                fraction,
-                overall,
-                eta,
-                what,
-            } => {
-                let full = (fraction * 20.0).ceil() as usize; // fraction is 0 to 1
-                let bar = "#".repeat(full) + &".".repeat(20 - full);
-                let line = format!(
-                    "      {bar} {what}  {:.0}% in all, {} left",
-                    overall * 100.0,
-                    pipeline::about(eta)
-                );
-                if terminal {
-                    print!("{line}");
-                    let _ = std::io::stdout().flush();
-                } else {
-                    let tenth = Some((stage, (fraction * 10.0) as u32));
-                    if tenth != shown {
-                        shown = tenth;
-                        println!("{line}");
-                    }
-                }
-            }
-            Event::Preview { path } => println!("      preview: {}", path.display()),
-        }
-    };
-    let control = Control::default();
-    match pipeline::run(
-        &args.input,
-        args.out.as_deref(),
-        &settings,
-        tools.as_deref(),
-        &control,
-        print,
-    ) {
-        Ok(scene) => {
-            println!("Scene: {}", scene.display());
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("{err}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// The Windows release build is a GUI program, so the CLI borrows the terminal's console to print.
-#[cfg(windows)]
-fn attach_console() {
-    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn AttachConsole(process: u32) -> i32;
-    }
-    unsafe {
-        AttachConsole(ATTACH_PARENT_PROCESS);
-    }
-}
-
 fn main() -> ExitCode {
     let context = tauri::generate_context!();
     // Packages built against system tools (the Nix flake) name their folder at build time;
@@ -241,9 +145,7 @@ fn main() -> ExitCode {
         .filter(|arg| !arg.starts_with("-psn_"))
         .collect();
     if args.len() > 1 {
-        #[cfg(windows)]
-        attach_console();
-        return cli(Cli::parse_from(args), tools);
+        return cli::run(args, tools);
     }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

@@ -1,7 +1,8 @@
 //! Stage 3: Spirula trains the splat. Its checkpoints are the previews; the last becomes
 //! `scene.ply`.
 
-use super::{Event, Job, Report, STOPPED, Settings, spirula_hint};
+use super::{Event, Job, Report, STOPPED, spirula_hint};
+use crate::settings::Settings;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};

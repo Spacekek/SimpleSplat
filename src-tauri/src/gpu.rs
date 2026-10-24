@@ -1,6 +1,7 @@
 //! The GPU Spirula trains on, and whether a run's memory fits on it.
 
-use crate::pipeline::{Quality, Settings, tool};
+use crate::pipeline::tool;
+use crate::settings::{Quality, Settings};
 use serde::Serialize;
 use std::path::Path;
 
@@ -136,7 +137,7 @@ pub fn gb(mib: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::Detail;
+    use crate::settings::Detail;
 
     #[test]
     fn devices_and_estimates() {

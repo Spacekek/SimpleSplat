@@ -12,10 +12,10 @@ cargo tauri build   # installers in src-tauri/target/release/bundle
 
 Where things are:
 
-- `src/`: the window. `index.html`, `main.js` and `styles.css` are used as they are, with no build step. `vendor/` holds the 3D viewer.
-- `src-tauri/`: the Rust program. `src/main.rs` has the window's commands and the CLI, `src/pipeline/` the three stages (frames, camera positions, training), `src/gpu.rs` the GPU memory check. `tauri.conf.json` (plus one file per platform) configures the app and its installers.
+- `src/`: the window. `index.html`, `main.js`, `adwaita.css` (the GNOME look) and `styles.css` (the screens) are used as they are, with no build step. `vendor/` holds the 3D viewer.
+- `src-tauri/`: the Rust program. `src/main.rs` has the window's commands, `src/cli.rs` the CLI, `src/settings.rs` the Detail presets, `src/pipeline.rs` runs the three stages in `src/pipeline/` (frames, camera positions, training), `src/gpu.rs` the GPU memory check. `tauri.conf.json` (plus one file per platform) configures the app and its installers.
 - `scripts/bundle_tools.py`: downloads ffmpeg and Spirula into `src-tauri/tools`.
-- `docs/PLAN.md`: what was decided and why.
+- `docs/PLAN.md`: how the app works and why, and what is left to do.
 
 `python3 scripts/bundle_tools.py` fetches the bundled tools on their own: pinned, checksummed ffmpeg and Spirula binaries into `src-tauri/tools`. It skips the work when nothing changed.
 
@@ -27,10 +27,10 @@ To release: bump `version` in `src-tauri/Cargo.toml` (the only place it is set),
 
 ## Updating the 3D viewer
 
-`src/vendor` holds unmodified files from two npm packages, both MIT: PlayCanvas 2.23.2 and its SuperSplat viewer 1.37.0. They update together: the viewer names the PlayCanvas versions it works with (`peerDependencies` on its [npm page](https://www.npmjs.com/package/@playcanvas/supersplat-viewer?activeTab=code)). Put the new versions in these two commands, run them, try the app (open a `.ply`), and update the versions above:
+`src/vendor` holds unmodified files from two packages on the npm registry, both MIT: PlayCanvas 2.23.2 and its SuperSplat viewer 1.37.0, only the files the viewer loads. They update together: the viewer names the PlayCanvas versions it works with (`peerDependencies` on its [npm page](https://www.npmjs.com/package/@playcanvas/supersplat-viewer?activeTab=code)). Put the new versions in these two commands, run them, check that `viewer.js` still imports only these three XR scripts, try the app (open a `.ply`), and update the versions above:
 
 ```sh
-curl -sfL https://registry.npmjs.org/playcanvas/-/playcanvas-2.23.2.tgz | tar -xzf - -C src/vendor/playcanvas --strip-components 1 package/LICENSE package/build/playcanvas.min.mjs package/scripts/esm/xr
+curl -sfL https://registry.npmjs.org/playcanvas/-/playcanvas-2.23.2.tgz | tar -xzf - -C src/vendor/playcanvas --strip-components 1 package/LICENSE package/build/playcanvas.min.mjs package/scripts/esm/xr/xr-controllers.mjs package/scripts/esm/xr/xr-manipulation.mjs package/scripts/esm/xr/xr-navigation.mjs
 curl -sfL https://registry.npmjs.org/@playcanvas/supersplat-viewer/-/supersplat-viewer-1.37.0.tgz | tar -xzf - -C src/vendor/supersplat-viewer --strip-components 1 package/LICENSE package/dist/viewer.js package/dist/settings.js package/dist/viewer.css
 ```
 

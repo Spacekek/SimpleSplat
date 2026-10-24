@@ -6,266 +6,25 @@
 //! setting re-runs everything after it. Each stage is a module with a `run` entry point.
 
 mod frames;
+mod report;
 mod sfm;
+mod sfm_model;
+mod tools;
 mod train;
 
+pub use report::Event;
+pub use tools::{Control, tool};
+
+use crate::settings::Settings;
 use frames::Input;
-use serde::{Deserialize, Serialize};
+use report::Report;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, mpsc};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
 pub const STAGES: usize = 3;
 pub const STOPPED: &str = "Stopped.";
-
-/// What a run uses: a Detail preset, with any advanced overrides. The UI shows each preset's values
-/// as the defaults, so this is their one source, and sends them back with its overrides applied.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Settings {
-    /// The most images used: photos from a folder, or frames from a video.
-    pub frames: u32,
-    /// Frames taken per second of video, between half of `frames` and `frames`.
-    pub fps: f32,
-    pub steps: u32,
-    pub max_size: u32,
-    /// Steps between exports (previews). None: a fifth of the steps.
-    pub export_every: Option<u32>,
-    /// None: one camera for video, one per photo otherwise.
-    pub single_camera: Option<bool>,
-    /// Spirula's SfM preset (image size, features, pairs).
-    pub sfm_quality: Quality,
-    /// The most splats training may grow to.
-    pub max_splats: u32,
-    /// Spirula's floater suppression and distraction robustness.
-    pub floater_suppression: Level,
-    pub ignore_moving: Level,
-    /// Per-frame exposure and colour correction (PPISP and a bilateral grid).
-    pub exposure_correction: bool,
-    pub keep_intermediates: bool,
-}
-
-/// The Detail presets, from quickest to best looking.
-#[derive(Clone, Copy, clap::ValueEnum)]
-pub enum Detail {
-    Low,
-    Medium,
-    High,
-}
-
-// Quality and Level are passed on to Spirula as arguments, so only its own values get through.
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Quality {
-    Low,
-    Medium,
-    High,
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Level {
-    Off,
-    Mild,
-    Strong,
-}
-
-impl Quality {
-    pub fn arg(self) -> &'static str {
-        match self {
-            Quality::Low => "low",
-            Quality::Medium => "medium",
-            Quality::High => "high",
-        }
-    }
-}
-
-impl Level {
-    pub fn arg(self) -> &'static str {
-        match self {
-            Level::Off => "off",
-            Level::Mild => "mild",
-            Level::Strong => "strong",
-        }
-    }
-}
-
-impl Settings {
-    pub fn detail(detail: Detail) -> Self {
-        // A video gives `fps` frames a second, but at least half of `frames` (short clips stay as
-        // dense as the old fixed counts, 100/150/300) and at most `frames` (long ones stay affordable).
-        let (frames, fps, steps, sfm_quality, max_splats) = match detail {
-            // Spirula adds at most about 10% splats per 100 steps until 2,500 before the end:
-            // on the test video 5k steps ended at 58k splats, 10k at 670k (Brush's 5k: about 240k).
-            Detail::Low => (200, 2.0, 10_000, Quality::Low, 1_000_000),
-            Detail::Medium => (300, 3.0, 15_000, Quality::Medium, 1_000_000),
-            // Spirula's own high preset; its low one (200k) saved Low no time, 5:04 for 5:19.
-            Detail::High => (600, 5.0, 30_000, Quality::High, 3_000_000),
-        };
-        Self {
-            frames,
-            fps,
-            steps,
-            max_size: 1600,
-            export_every: None,
-            single_camera: None,
-            sfm_quality,
-            max_splats,
-            // Better on every score in the settings tests, for 8% more training time.
-            floater_suppression: Level::Mild,
-            ignore_moving: Level::Off,
-            exposure_correction: true,
-            keep_intermediates: true,
-        }
-    }
-}
-
-/// Progress reported while the pipeline runs. `stage` counts from 0.
-#[derive(Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Event {
-    Project {
-        path: PathBuf,
-    },
-    StageStart {
-        stage: usize,
-        name: String,
-        skipped: bool,
-    },
-    StageDone {
-        stage: usize,
-        secs: u64,
-    },
-    Info {
-        text: String,
-    },
-    /// `fraction` of the stage is done and `overall` of the job; `eta` is seconds left.
-    Progress {
-        stage: usize,
-        fraction: f64,
-        overall: f64,
-        eta: u64,
-        what: String,
-    },
-    Preview {
-        path: PathBuf,
-    },
-}
-
-/// Stops a running pipeline from another thread.
-#[derive(Default)]
-pub struct Control {
-    stopped: AtomicBool,
-    child: Mutex<Option<Child>>,
-}
-
-impl Control {
-    /// Kills the running tool. During training the latest preview becomes the result.
-    pub fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        if let Some(child) = self.child.lock().unwrap().as_mut() {
-            let _ = child.kill();
-        }
-    }
-
-    fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst)
-    }
-}
-
-/// Sends events, and turns each stage's fraction done into overall progress and time left.
-///
-/// Each stage has an estimate in seconds from runs on an Apple M5. The speed seen so far scales what
-/// is left: the running stage's own once it is 5% along, before that the finished stages' (when they
-/// took long enough to tell), else the estimates stand as they are.
-struct Report<'a> {
-    emit: &'a mut dyn FnMut(Event),
-    /// Each stage's estimate in seconds; a skipped stage's becomes 0.
-    planned: [f64; STAGES],
-    stage: usize,
-    started: Instant,
-    /// Seconds the finished stages took, and what they were estimated to take.
-    took: f64,
-    estimated: f64,
-    sent: Option<Instant>,
-}
-
-impl<'a> Report<'a> {
-    fn new(emit: &'a mut dyn FnMut(Event), estimates: [f64; STAGES]) -> Self {
-        Self {
-            emit,
-            planned: estimates,
-            stage: 0,
-            started: Instant::now(),
-            took: 0.0,
-            estimated: 0.0,
-            sent: None,
-        }
-    }
-
-    fn event(&mut self, event: Event) {
-        (self.emit)(event);
-    }
-
-    fn start(&mut self, stage: usize, name: &str, skipped: bool) {
-        (self.stage, self.started, self.sent) = (stage, Instant::now(), None);
-        if skipped {
-            self.planned[stage] = 0.0;
-        }
-        self.event(Event::StageStart {
-            stage,
-            name: name.into(),
-            skipped,
-        });
-        if !skipped {
-            self.progress(0.0, "");
-        }
-    }
-
-    fn done(&mut self) {
-        let secs = self.started.elapsed().as_secs_f64();
-        self.took += secs;
-        self.estimated += self.planned[self.stage];
-        self.event(Event::StageDone {
-            stage: self.stage,
-            secs: secs as u64,
-        });
-    }
-
-    /// `fraction` of the running stage is done, and it is busy with `what`.
-    fn progress(&mut self, fraction: f64, what: &str) {
-        if self
-            .sent
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(250))
-        {
-            return;
-        }
-        self.sent = Some(Instant::now());
-        let fraction = fraction.clamp(0.0, 1.0);
-        let total: f64 = self.planned.iter().sum();
-        let here = self.planned[self.stage] * fraction;
-        let done = self.planned[..self.stage].iter().sum::<f64>() + here;
-        let speed = if here > 0.05 * self.planned[self.stage] {
-            self.started.elapsed().as_secs_f64() / here
-        } else if self.estimated > 30.0 {
-            self.took / self.estimated
-        } else {
-            1.0
-        };
-        let event = Event::Progress {
-            stage: self.stage,
-            fraction,
-            overall: if total > 0.0 { done / total } else { 1.0 },
-            eta: ((total - done) * speed).round() as u64,
-            what: what.into(),
-        };
-        self.event(event);
-    }
-}
 
 /// Runs the whole pipeline and returns the path of the finished scene. Errors are plain language.
 pub fn run(
@@ -290,7 +49,7 @@ pub fn run(
         log,
         control,
     };
-    let _awake = keep_awake();
+    let _awake = crate::awake::keep_awake();
     emit(Event::Project {
         path: job.project.clone(),
     });
@@ -423,95 +182,7 @@ impl Job<'_> {
         out.done();
         Ok(())
     }
-
-    fn cmd(&self, name: &str) -> Command {
-        tool(self.tools.as_deref(), name)
-    }
-
-    /// Runs a tool with its stdout and stderr lines appended to log.txt and passed to `on_line`.
-    fn run_tool(&mut self, mut cmd: Command, on_line: &mut dyn FnMut(&str)) -> Result<(), String> {
-        if self.control.stopped() {
-            return Err(STOPPED.into());
-        }
-        let _ = writeln!(self.log, "\n$ {cmd:?}");
-        let mut child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Can't start {:?}: {e}", cmd.get_program()))?;
-        let (sender, lines) = mpsc::channel();
-        forward_lines(child.stdout.take().expect("piped"), sender.clone());
-        forward_lines(child.stderr.take().expect("piped"), sender);
-        *self.control.child.lock().unwrap() = Some(child);
-        // A stop that came before the child was registered had nothing to kill.
-        if self.control.stopped() {
-            self.control.stop();
-        }
-        for line in lines {
-            let _ = writeln!(self.log, "{line}");
-            on_line(&line);
-        }
-        // Poll instead of wait() so Control::stop never blocks on this lock.
-        let status = loop {
-            let polled = self
-                .control
-                .child
-                .lock()
-                .unwrap()
-                .as_mut()
-                .expect("registered above")
-                .try_wait();
-            if let Some(status) = polled.map_err(|e| e.to_string())? {
-                break status;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        *self.control.child.lock().unwrap() = None;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("{:?} exited with {status}", cmd.get_program()))
-        }
-    }
-
-    /// Runs a tool and returns its stdout followed by its stderr.
-    fn tool_output(&mut self, cmd: &mut Command) -> Result<String, String> {
-        let _ = writeln!(self.log, "\n$ {cmd:?}");
-        let out = cmd
-            .output()
-            .map_err(|e| format!("Can't start {:?}: {e}", cmd.get_program()))?;
-        let text = String::from_utf8_lossy(&out.stdout).into_owned()
-            + &String::from_utf8_lossy(&out.stderr);
-        let _ = self.log.write_all(text.as_bytes());
-        Ok(text)
-    }
-
-    fn log_tail(&mut self) -> String {
-        let mut tail = Vec::new();
-        if let Ok(mut f) = File::open(self.project.join("log.txt")) {
-            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-            let _ = f.seek(SeekFrom::Start(len.saturating_sub(8192)));
-            let _ = f.read_to_end(&mut tail);
-        }
-        // The cut can land inside a multi-byte character.
-        String::from_utf8_lossy(&tail).into_owned()
-    }
 }
-
-/// A bundled tool if present, otherwise the bare name for a PATH lookup.
-pub fn tool(tools: Option<&Path>, name: &str) -> Command {
-    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-    let bundled = tools.map(|dir| dir.join(file)).filter(|path| path.exists());
-    #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut cmd = Command::new(bundled.unwrap_or_else(|| name.into()));
-    // On Windows each console tool started by the app would open its own console window.
-    #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
-    cmd
-}
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn project_dir(input: &Path, out: Option<&Path>) -> Result<PathBuf, String> {
     let name = format!(
@@ -556,30 +227,6 @@ fn fingerprint(files: &[PathBuf]) -> String {
     format!("bytes={bytes} modified={newest}")
 }
 
-/// Sends `stream`'s lines to `sender` from a thread of their own. Invalid UTF-8 doesn't end the
-/// reading, which would leave the tool blocked on a full pipe.
-fn forward_lines(stream: impl Read + Send + 'static, sender: mpsc::Sender<String>) {
-    std::thread::spawn(move || {
-        for line in BufReader::new(stream).split(b'\n').map_while(Result::ok) {
-            let line = String::from_utf8_lossy(&line);
-            let _ = sender.send(line.trim_end_matches('\r').to_string());
-        }
-    });
-}
-
-/// Time left in words.
-pub fn about(secs: u64) -> String {
-    if secs < 60 {
-        "less than a minute".into()
-    } else {
-        let minutes = (secs + 30) / 60;
-        format!(
-            "about {minutes} minute{}",
-            if minutes == 1 { "" } else { "s" }
-        )
-    }
-}
-
 /// The plain-language error for a failed Spirula run, or `otherwise`.
 fn spirula_hint(log_tail: &str, otherwise: &'static str) -> &'static str {
     let tail = log_tail.to_lowercase();
@@ -590,65 +237,6 @@ fn spirula_hint(log_tail: &str, otherwise: &'static str) -> &'static str {
     } else {
         otherwise
     }
-}
-
-/// Keeps the machine from sleeping while alive.
-struct Awake(Option<Child>);
-
-impl Drop for Awake {
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        #[cfg(windows)]
-        unsafe {
-            SetThreadExecutionState(ES_CONTINUOUS);
-        }
-    }
-}
-
-#[cfg(windows)]
-const ES_CONTINUOUS: u32 = 0x8000_0000;
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn SetThreadExecutionState(flags: u32) -> u32;
-}
-
-/// Held by this thread until Awake resets it.
-#[cfg(windows)]
-fn keep_awake() -> Awake {
-    const ES_SYSTEM_REQUIRED: u32 = 0x1;
-    unsafe {
-        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
-    }
-    Awake(None)
-}
-
-#[cfg(not(windows))]
-fn keep_awake() -> Awake {
-    let pid = std::process::id().to_string();
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = Command::new("caffeinate");
-        c.args(["-i", "-w", &pid]);
-        c
-    } else {
-        // Like caffeinate -w: ends with this process, even if it dies without dropping Awake.
-        let mut c = Command::new("systemd-inhibit");
-        c.args([
-            "--what=idle:sleep",
-            "--who=SimpleSplat",
-            "--why=Making a splat",
-            "tail",
-            &format!("--pid={pid}"),
-            "-f",
-            "/dev/null",
-        ]);
-        c
-    };
-    Awake(cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok())
 }
 
 #[cfg(test)]
@@ -695,8 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn presets_and_error_hints() {
-        assert_eq!(Settings::detail(Detail::High).steps, 30_000);
+    fn error_hints() {
         assert_eq!(
             spirula_hint(
                 "vkAllocateMemory: VK_ERROR_OUT_OF_DEVICE_MEMORY",
@@ -705,23 +292,5 @@ mod tests {
             "The GPU ran out of memory. Try a lower Detail setting."
         );
         assert_eq!(spirula_hint("RESULT: FAILED", "Lost."), "Lost.");
-    }
-
-    #[test]
-    fn time_left_scales_with_the_speed_seen() {
-        let mut sent = Vec::new();
-        let mut emit = |event| sent.push(event);
-        let mut out = Report::new(&mut emit, [10.0, 100.0, 890.0]);
-        out.start(0, "frames", true);
-        out.start(1, "sfm", false);
-        out.started -= Duration::from_secs(20); // twice as slow as estimated
-        out.sent = None;
-        out.progress(0.1, "");
-        let Some(Event::Progress { overall, eta, .. }) = sent.last() else {
-            panic!("no progress sent");
-        };
-        // Skipped frames count for nothing: 10 of 990 estimated seconds done, 980 left at half speed.
-        assert!((overall - 10.0 / 990.0).abs() < 1e-9);
-        assert_eq!(*eta, 1960);
     }
 }

@@ -1,0 +1,620 @@
+/* GNOME / libadwaita look: palette, header bars, boxed lists, pills, OSD buttons. */
+:root {
+  color-scheme: light dark;
+  --window-bg: #fafafb;
+  --view-bg: #ffffff;
+  --headerbar-bg: #ffffff;
+  --card-bg: #ffffff;
+  --fg: rgb(0 0 6 / 0.8);
+  --accent-bg: #3584e4;
+  --accent: #1c71d8;
+  --error: #c01c28;
+  --border: rgb(0 0 6 / 0.12);
+  --shade: rgb(0 0 6 / 0.07);
+  --fill: color-mix(in srgb, currentColor 10%, transparent);
+  --fill-hover: color-mix(in srgb, currentColor 15%, transparent);
+  --fill-active: color-mix(in srgb, currentColor 30%, transparent);
+  --toggle-active-bg: var(--view-bg);
+  --popover-bg: #ffffff;
+  --dialog-bg: #fafafb;
+  --card-shadow:
+    0 0 0 1px rgb(0 0 6 / 0.03),
+    0 1px 3px 1px rgb(0 0 6 / 0.07),
+    0 2px 6px 2px rgb(0 0 6 / 0.03);
+  font:
+    14.5px/1.4 "Adwaita Sans",
+    Cantarell,
+    Inter,
+    -apple-system,
+    system-ui,
+    sans-serif;
+  color: var(--fg);
+  background: var(--window-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --window-bg: #222226;
+    --view-bg: #1d1d20;
+    --headerbar-bg: #2e2e32;
+    --card-bg: rgb(255 255 255 / 0.08);
+    --fg: #ffffff;
+    --accent: #78aeed;
+    --error: #ff7b63;
+    --border: rgb(255 255 255 / 0.12);
+    --shade: rgb(0 0 6 / 0.36);
+    --toggle-active-bg: rgb(255 255 255 / 0.2);
+    --popover-bg: #36363a;
+    --dialog-bg: #36363a;
+    --card-shadow:
+      0 0 0 1px rgb(0 0 6 / 0.09),
+      0 1px 3px 1px rgb(0 0 6 / 0.2),
+      0 2px 6px 2px rgb(0 0 6 / 0.1);
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* `hidden` must win over the display rules below. */
+[hidden] {
+  display: none !important;
+}
+
+h1,
+h3,
+p {
+  margin: 0;
+}
+
+code {
+  font: 0.9em ui-monospace, "Adwaita Mono", monospace;
+}
+
+.dim {
+  opacity: 0.55;
+}
+
+.caption {
+  font-size: 0.85em;
+}
+
+.warn {
+  color: var(--error);
+}
+
+/* Header bar: it is the window's title bar (drag to move, double-click to maximise). The title is
+   centred on the window, whatever sits in the start and end slots. */
+.headerbar,
+.osd-bar {
+  flex: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 0 6px;
+}
+
+.headerbar {
+  background: var(--headerbar-bg);
+  box-shadow: 0 1px var(--shade);
+}
+
+.start,
+.end {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.headerbar .window-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* macOS keeps its window buttons, floating over the start of the bar. */
+body[data-platform="mac"] > section .start {
+  padding-left: 72px;
+}
+
+/* Linux has no system title bar, so the bar carries GNOME's close button. */
+.window-close {
+  width: 24px;
+  min-height: 24px;
+  height: 24px;
+  margin-left: 6px;
+}
+
+.window-title {
+  text-align: center;
+  line-height: 1.2;
+}
+
+.window-title .title {
+  font-weight: 700;
+}
+
+.window-title .subtitle {
+  font-size: 0.85em;
+  opacity: 0.55;
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 12px 36px;
+}
+
+.clamp {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 624px;
+  margin: 0 auto;
+}
+
+/* Buttons */
+.btn {
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  min-height: 34px;
+  padding: 5px 17px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--fill);
+  cursor: default;
+}
+
+.btn:hover {
+  background: var(--fill-hover);
+}
+
+.btn:active {
+  background: var(--fill-active);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+}
+
+.btn.flat {
+  background: transparent;
+}
+
+.btn.flat:hover {
+  background: var(--fill);
+}
+
+.btn.circular {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.btn.pill {
+  padding: 10px 32px;
+  border-radius: 9999px;
+}
+
+.btn.suggested {
+  background: var(--accent-bg);
+  color: white;
+}
+
+.btn.suggested:hover {
+  filter: brightness(1.08);
+}
+
+.btn.suggested:active {
+  filter: brightness(0.9);
+}
+
+.btn.osd {
+  color: white;
+  background: rgb(0 0 0 / 0.65);
+}
+
+.btn.osd:hover {
+  background: rgb(0 0 0 / 0.75);
+}
+
+.btn:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+  outline-offset: 1px;
+}
+
+/* Boxed lists and rows (preferences style). */
+.group + .group {
+  margin-top: 24px;
+}
+
+.group-title {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 0 0 8px 2px;
+}
+
+.boxed-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  box-sizing: border-box;
+  padding: 8px 12px;
+}
+
+.boxed-list > .row + .row {
+  border-top: 1px solid var(--border);
+}
+
+.row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.row .subtitle {
+  font-size: 0.85em;
+  opacity: 0.55;
+}
+
+/* Entries and spin buttons */
+.row input[type="number"],
+.row select {
+  font: inherit;
+  color: inherit;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--fill);
+}
+
+.row input[type="number"] {
+  width: 120px;
+  text-align: end;
+}
+
+.row select option {
+  color: black;
+}
+
+input.plain {
+  display: block;
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  outline: none;
+  text-overflow: ellipsis;
+}
+
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--accent-bg);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+/* GNOME switch */
+input.switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 26px;
+  border-radius: 9999px;
+  background: var(--fill-hover);
+  transition: background 0.15s;
+}
+
+input.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 2px 4px rgb(0 0 0 / 0.2);
+  transition: transform 0.15s;
+}
+
+input.switch:checked {
+  background: var(--accent-bg);
+}
+
+input.switch:checked::after {
+  transform: translateX(22px);
+}
+
+/* Toggle group (libadwaita 1.7) */
+.toggle-group {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--fill);
+}
+
+.toggle-group input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-group span {
+  display: block;
+  padding: 4px 14px;
+  border-radius: 6px;
+  font-weight: 700;
+}
+
+.toggle-group label:hover span {
+  background: var(--fill);
+}
+
+.toggle-group input:checked + span {
+  background: var(--toggle-active-bg);
+  box-shadow: 0 1px 3px rgb(0 0 6 / 0.15);
+}
+
+.toggle-group input:focus-visible + span {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+}
+
+/* Spin rows: the value, then fewer and more. */
+.spin {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.spin .btn {
+  width: 30px;
+  min-height: 30px;
+  height: 30px;
+  font-size: 1.1em;
+}
+
+.row input[type="number"]::-webkit-inner-spin-button,
+.row input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Button rows: an action closing a boxed list. */
+.button-row {
+  width: 100%;
+  justify-content: center;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  cursor: default;
+}
+
+.button-row:hover {
+  background: var(--fill);
+}
+
+/* Icon and label buttons (header bars show them flat). */
+.icon-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.headerbar .icon-label {
+  padding-inline: 12px;
+}
+
+/* The main menu: a popover under its button. */
+.headerbar .end {
+  position: relative;
+}
+
+.popover-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--popover-bg);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 4px 16px rgb(0 0 0 / 0.2);
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 6px;
+  text-align: start;
+  font: inherit;
+  color: inherit;
+  background: none;
+}
+
+.menu-item:hover {
+  background: var(--fill);
+}
+
+/* Banner: a strip under the header bar. */
+.adw-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 46px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--accent-bg) 30%, var(--window-bg));
+}
+
+/* Dialogs: preferences and about (adaptive dialogs), and alerts. */
+dialog {
+  padding: 0;
+  border: 0;
+  color: var(--fg);
+  background: var(--dialog-bg);
+  border-radius: 14px;
+  box-shadow: 0 6px 30px rgb(0 0 0 / 0.35);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+}
+
+/* Opening one focuses the dialog itself, as libadwaita does, not its close button. */
+dialog:focus {
+  outline: none;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+
+dialog.dialog[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+dialog .headerbar {
+  background: transparent;
+  box-shadow: none;
+}
+
+.about {
+  width: 360px;
+}
+
+.about-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 24px;
+  text-align: center;
+}
+
+.about-body h2 {
+  font-size: 1.5em;
+  font-weight: 800;
+}
+
+.about-body .boxed-list {
+  align-self: stretch;
+  margin: 8px 0;
+}
+
+.about-body .boxed-list:not(:has(:not([hidden]))) {
+  display: none;
+}
+
+.version {
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 0.9em;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-bg) 15%, transparent);
+}
+
+dialog.alert {
+  width: 372px;
+  box-sizing: border-box;
+  padding: 24px;
+  text-align: center;
+}
+
+.alert h2 {
+  font-size: 1.25em;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.alert p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.alert .responses {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 6px 0 2px;
+  appearance: none;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--fill);
+  overflow: hidden;
+}
+
+progress::-webkit-progress-bar {
+  background: var(--fill);
+}
+
+progress::-webkit-progress-value {
+  background: var(--accent-bg);
+  border-radius: 9999px;
+  transition: width 0.3s;
+}
+
+.osd-label {
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 0.85em;
+  white-space: nowrap;
+  color: white;
+  background: rgb(0 0 0 / 0.55);
+}
+
+.osd-bar {
+  position: absolute;
+  inset: 0 0 auto;
+  padding: 10px 12px 18px;
+  background: linear-gradient(rgb(0 0 0 / 0.35), transparent);
+}
+
+.osd-bar .pill {
+  padding: 7px 18px;
+}
