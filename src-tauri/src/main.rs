@@ -5,7 +5,7 @@ mod gpu;
 mod pipeline;
 
 use clap::Parser;
-use pipeline::{Control, Event, Settings};
+use pipeline::{Control, Detail, Event, Settings};
 use serde::Deserialize;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -23,8 +23,8 @@ struct Cli {
     /// A video, or a folder of photos.
     input: PathBuf,
     /// More detail looks better and takes longer.
-    #[arg(long, default_value = "medium", value_parser = ["low", "medium", "high"])]
-    detail: String,
+    #[arg(long, value_enum, default_value_t = Detail::Medium)]
+    detail: Detail,
     /// Folder for the results [default: next to the input].
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
@@ -66,7 +66,7 @@ async fn estimate(state: State<'_, AppState>, request: Request) -> Result<Fit, S
         .get_or_init(|| gpu::detect(state.tools.as_deref()))
         .clone();
     Ok(Fit {
-        need: gpu::gb(gpu::need(&s).0),
+        need: gpu::gb(gpu::need(&s).mib),
         warning: found.as_ref().and_then(|g| gpu::warning(&s, g)),
         gpu: found,
     })
@@ -75,7 +75,7 @@ async fn estimate(state: State<'_, AppState>, request: Request) -> Result<Fit, S
 /// Each Detail preset's settings, Low to High: the defaults the UI shows.
 #[tauri::command]
 fn defaults() -> [Settings; 3] {
-    ["low", "medium", "high"].map(|d| Settings::detail(d).expect("a preset"))
+    [Detail::Low, Detail::Medium, Detail::High].map(Settings::detail)
 }
 
 /// GitHub repository ("owner/name") of a CI build, else "": only CI builds look for newer releases.
@@ -143,24 +143,28 @@ fn allow_folder(app: AppHandle, path: PathBuf) -> Result<(), String> {
 
 /// Headless run: `simplesplat <input> [--detail ...] [--out ...]`.
 fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
-    let settings = Settings::detail(&args.detail).expect("clap checks the value");
+    let settings = Settings::detail(args.detail);
     // In a terminal, one progress line redrawn in place; otherwise a line per tenth of a stage.
     let terminal = std::io::stdout().is_terminal();
-    let mut shown = (0, 0);
+    let mut shown = None;
     let print = &mut |event: Event| {
         if terminal {
             print!("\r{:79}\r", ""); // clear the progress line
         }
         match event {
             Event::Project { path } => println!("Project folder: {}", path.display()),
-            Event::Stage { n, name, skipped } => {
+            Event::StageStart {
+                stage,
+                name,
+                skipped,
+            } => {
                 let done = if skipped { ": already done" } else { "" };
-                println!("[{n}/{}] {name}{done}", pipeline::STAGES);
+                println!("[{}/{}] {name}{done}", stage + 1, pipeline::STAGES);
             }
             Event::StageDone { secs, .. } => println!("      done in {secs}s"),
             Event::Info { text } => println!("      {text}"),
             Event::Progress {
-                n,
+                stage,
                 fraction,
                 overall,
                 eta,
@@ -176,9 +180,12 @@ fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
                 if terminal {
                     print!("{line}");
                     let _ = std::io::stdout().flush();
-                } else if (n, (fraction * 10.0) as u32) != shown {
-                    shown = (n, (fraction * 10.0) as u32);
-                    println!("{line}");
+                } else {
+                    let tenth = Some((stage, (fraction * 10.0) as u32));
+                    if tenth != shown {
+                        shown = tenth;
+                        println!("{line}");
+                    }
                 }
             }
             Event::Preview { path } => println!("      preview: {}", path.display()),
@@ -205,16 +212,15 @@ fn cli(args: Cli, tools: Option<PathBuf>) -> ExitCode {
 }
 
 /// The Windows release build is a GUI program, so the CLI borrows the terminal's console to print.
-// ponytail: the shell doesn't wait for a GUI program (the prompt returns, the exit code is lost);
-// ship a console-subsystem copy as simplesplat.com beside the .exe if Windows CLI use grows
 #[cfg(windows)]
 fn attach_console() {
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn AttachConsole(process: u32) -> i32;
     }
     unsafe {
-        AttachConsole(u32::MAX); // ATTACH_PARENT_PROCESS
+        AttachConsole(ATTACH_PARENT_PROCESS);
     }
 }
 

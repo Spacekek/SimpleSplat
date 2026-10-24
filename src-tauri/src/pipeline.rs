@@ -9,6 +9,7 @@ mod frames;
 mod sfm;
 mod train;
 
+use frames::Input;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -48,7 +49,15 @@ pub struct Settings {
     pub keep_intermediates: bool,
 }
 
-// Passed on to Spirula as arguments, so only its own values get through.
+/// The Detail presets, from quickest to best looking.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum Detail {
+    Low,
+    Medium,
+    High,
+}
+
+// Quality and Level are passed on to Spirula as arguments, so only its own values get through.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Quality {
@@ -67,30 +76,37 @@ pub enum Level {
 
 impl Quality {
     pub fn arg(self) -> &'static str {
-        ["low", "medium", "high"][self as usize]
+        match self {
+            Quality::Low => "low",
+            Quality::Medium => "medium",
+            Quality::High => "high",
+        }
     }
 }
 
 impl Level {
     pub fn arg(self) -> &'static str {
-        ["off", "mild", "strong"][self as usize]
+        match self {
+            Level::Off => "off",
+            Level::Mild => "mild",
+            Level::Strong => "strong",
+        }
     }
 }
 
 impl Settings {
-    pub fn detail(name: &str) -> Option<Self> {
+    pub fn detail(detail: Detail) -> Self {
         // A video gives `fps` frames a second, but at least half of `frames` (short clips stay as
         // dense as the old fixed counts, 100/150/300) and at most `frames` (long ones stay affordable).
-        let (frames, fps, steps, sfm_quality, max_splats) = match name {
+        let (frames, fps, steps, sfm_quality, max_splats) = match detail {
             // Spirula adds at most about 10% splats per 100 steps until 2,500 before the end:
             // on the test video 5k steps ended at 58k splats, 10k at 670k (Brush's 5k: about 240k).
-            "low" => (200, 2.0, 10_000, Quality::Low, 1_000_000),
-            "medium" => (300, 3.0, 15_000, Quality::Medium, 1_000_000),
+            Detail::Low => (200, 2.0, 10_000, Quality::Low, 1_000_000),
+            Detail::Medium => (300, 3.0, 15_000, Quality::Medium, 1_000_000),
             // Spirula's own high preset; its low one (200k) saved Low no time, 5:04 for 5:19.
-            "high" => (600, 5.0, 30_000, Quality::High, 3_000_000),
-            _ => return None,
+            Detail::High => (600, 5.0, 30_000, Quality::High, 3_000_000),
         };
-        Some(Self {
+        Self {
             frames,
             fps,
             steps,
@@ -104,32 +120,32 @@ impl Settings {
             ignore_moving: Level::Off,
             exposure_correction: true,
             keep_intermediates: true,
-        })
+        }
     }
 }
 
-/// Progress reported while the pipeline runs.
+/// Progress reported while the pipeline runs. `stage` counts from 0.
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Event {
     Project {
         path: PathBuf,
     },
-    Stage {
-        n: usize,
+    StageStart {
+        stage: usize,
         name: String,
         skipped: bool,
     },
     StageDone {
-        n: usize,
+        stage: usize,
         secs: u64,
     },
     Info {
         text: String,
     },
-    /// `fraction` of stage `n` is done and `overall` of the job; `eta` is seconds left.
+    /// `fraction` of the stage is done and `overall` of the job; `eta` is seconds left.
     Progress {
-        n: usize,
+        stage: usize,
         fraction: f64,
         overall: f64,
         eta: u64,
@@ -168,11 +184,13 @@ impl Control {
 /// took long enough to tell), else the estimates stand as they are.
 struct Report<'a> {
     emit: &'a mut dyn FnMut(Event),
-    estimates: [f64; STAGES],
-    runs: [bool; STAGES],
+    /// Each stage's estimate in seconds; a skipped stage's becomes 0.
+    planned: [f64; STAGES],
     stage: usize,
     started: Instant,
-    finished: (f64, f64), // seconds taken and estimated by the stages run so far
+    /// Seconds the finished stages took, and what they were estimated to take.
+    took: f64,
+    estimated: f64,
     sent: Option<Instant>,
 }
 
@@ -180,11 +198,11 @@ impl<'a> Report<'a> {
     fn new(emit: &'a mut dyn FnMut(Event), estimates: [f64; STAGES]) -> Self {
         Self {
             emit,
-            estimates,
-            runs: [true; STAGES],
+            planned: estimates,
             stage: 0,
             started: Instant::now(),
-            finished: (0.0, 0.0),
+            took: 0.0,
+            estimated: 0.0,
             sent: None,
         }
     }
@@ -193,11 +211,13 @@ impl<'a> Report<'a> {
         (self.emit)(event);
     }
 
-    fn start(&mut self, n: usize, name: &str, skipped: bool) {
-        (self.stage, self.started, self.sent) = (n - 1, Instant::now(), None);
-        self.runs[n - 1] = !skipped;
-        self.event(Event::Stage {
-            n,
+    fn start(&mut self, stage: usize, name: &str, skipped: bool) {
+        (self.stage, self.started, self.sent) = (stage, Instant::now(), None);
+        if skipped {
+            self.planned[stage] = 0.0;
+        }
+        self.event(Event::StageStart {
+            stage,
             name: name.into(),
             skipped,
         });
@@ -208,10 +228,10 @@ impl<'a> Report<'a> {
 
     fn done(&mut self) {
         let secs = self.started.elapsed().as_secs_f64();
-        self.finished.0 += secs;
-        self.finished.1 += self.estimates[self.stage];
+        self.took += secs;
+        self.estimated += self.planned[self.stage];
         self.event(Event::StageDone {
-            n: self.stage + 1,
+            stage: self.stage,
             secs: secs as u64,
         });
     }
@@ -226,19 +246,18 @@ impl<'a> Report<'a> {
         }
         self.sent = Some(Instant::now());
         let fraction = fraction.clamp(0.0, 1.0);
-        let planned = |i: usize| if self.runs[i] { self.estimates[i] } else { 0.0 };
-        let total: f64 = (0..STAGES).map(planned).sum();
-        let here = planned(self.stage) * fraction;
-        let done = (0..self.stage).map(planned).sum::<f64>() + here;
-        let speed = if here > 0.05 * planned(self.stage) {
+        let total: f64 = self.planned.iter().sum();
+        let here = self.planned[self.stage] * fraction;
+        let done = self.planned[..self.stage].iter().sum::<f64>() + here;
+        let speed = if here > 0.05 * self.planned[self.stage] {
             self.started.elapsed().as_secs_f64() / here
-        } else if self.finished.1 > 30.0 {
-            self.finished.0 / self.finished.1
+        } else if self.estimated > 30.0 {
+            self.took / self.estimated
         } else {
             1.0
         };
         let event = Event::Progress {
-            n: self.stage + 1,
+            stage: self.stage,
             fraction,
             overall: if total > 0.0 { done / total } else { 1.0 },
             eta: ((total - done) * speed).round() as u64,
@@ -299,35 +318,26 @@ struct Job<'a> {
 impl Job<'_> {
     fn pipeline(
         &mut self,
-        input: &Path,
+        path: &Path,
         s: &Settings,
         emit: &mut dyn FnMut(Event),
     ) -> Result<PathBuf, String> {
-        let video = input.is_file();
+        let input = Input::open(self, path, s)?;
+        let video = input.is_video();
         let single_camera = s.single_camera.unwrap_or(video);
-        let files = if video {
-            vec![input.to_path_buf()]
-        } else {
-            frames::photos(input, s.frames)?
-        };
-        let (n, secs) = if video {
-            let secs = frames::length(self, input)?;
-            (frames::video_frames(secs, s.fps, s.frames), secs)
-        } else {
-            (files.len(), 0.0)
-        };
+        let images = input.images();
         let out = &mut Report::new(
             emit,
             [
-                frames::estimate(n, video),
-                sfm::estimate(n, s.sfm_quality),
+                input.estimate(),
+                sfm::estimate(images, s.sfm_quality),
                 train::estimate(s.steps),
             ],
         );
         let frames_key = format!(
-            "input={} {} frames={n} max_size={}",
-            input.display(),
-            fingerprint(&files),
+            "input={} {} frames={images} max_size={}",
+            path.display(),
+            fingerprint(input.files()),
             s.max_size
         );
         let label = if video {
@@ -335,8 +345,8 @@ impl Job<'_> {
         } else {
             "Preparing photos"
         };
-        self.stage(1, label, "images", &frames_key, out, |job, dir, out| {
-            frames::run(job, &files, n, secs, s, dir, out)
+        self.stage(0, label, "images", &frames_key, out, |job, dir, out| {
+            frames::run(job, &input, s, dir, out)
         })?;
 
         let sfm_key = format!(
@@ -344,7 +354,7 @@ impl Job<'_> {
             s.sfm_quality.arg()
         );
         self.stage(
-            2,
+            1,
             "Finding camera positions",
             "sparse",
             &sfm_key,
@@ -361,7 +371,7 @@ impl Job<'_> {
             s.exposure_correction
         );
         self.stage(
-            3,
+            2,
             "Training the splat",
             "exports",
             &train_key,
@@ -385,7 +395,7 @@ impl Job<'_> {
 
     fn stage(
         &mut self,
-        n: usize,
+        stage: usize,
         name: &str,
         dir: &str,
         key: &str,
@@ -397,7 +407,7 @@ impl Job<'_> {
         }
         let stamp = self.project.join(format!(".{dir}.stamp"));
         let skipped = fs::read_to_string(&stamp).is_ok_and(|s| s == key);
-        out.start(n, name, skipped);
+        out.start(stage, name, skipped);
         if skipped {
             return Ok(());
         }
@@ -418,8 +428,8 @@ impl Job<'_> {
         tool(self.tools.as_deref(), name)
     }
 
-    /// Runs a command with its stdout and stderr lines appended to log.txt and passed to `on_line`.
-    fn run(&mut self, mut cmd: Command, on_line: &mut dyn FnMut(&str)) -> Result<(), String> {
+    /// Runs a tool with its stdout and stderr lines appended to log.txt and passed to `on_line`.
+    fn run_tool(&mut self, mut cmd: Command, on_line: &mut dyn FnMut(&str)) -> Result<(), String> {
         if self.control.stopped() {
             return Err(STOPPED.into());
         }
@@ -464,8 +474,8 @@ impl Job<'_> {
         }
     }
 
-    /// Runs a command and returns stdout followed by stderr.
-    fn capture(&mut self, cmd: &mut Command) -> Result<String, String> {
+    /// Runs a tool and returns its stdout followed by its stderr.
+    fn tool_output(&mut self, cmd: &mut Command) -> Result<String, String> {
         let _ = writeln!(self.log, "\n$ {cmd:?}");
         let out = cmd
             .output()
@@ -496,9 +506,12 @@ pub fn tool(tools: Option<&Path>, name: &str) -> Command {
     let mut cmd = Command::new(bundled.unwrap_or_else(|| name.into()));
     // On Windows each console tool started by the app would open its own console window.
     #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
     cmd
 }
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn project_dir(input: &Path, out: Option<&Path>) -> Result<PathBuf, String> {
     let name = format!(
@@ -568,7 +581,6 @@ pub fn about(secs: u64) -> String {
 }
 
 /// The plain-language error for a failed Spirula run, or `otherwise`.
-// ponytail: GPU failure strings are guessed (Vulkan's error names), refine from real failures
 fn spirula_hint(log_tail: &str, otherwise: &'static str) -> &'static str {
     let tail = log_tail.to_lowercase();
     if tail.contains("out of memory") || tail.contains("out_of_device_memory") {
@@ -659,7 +671,7 @@ mod tests {
         let work = |key: &str, job: &mut Job| {
             let mut ignore = |_: Event| {};
             let out = &mut Report::new(&mut ignore, [1.0; STAGES]);
-            job.stage(1, "test", "out", key, out, |_, dir, _| {
+            job.stage(0, "test", "out", key, out, |_, dir, _| {
                 runs.set(runs.get() + 1);
                 fs::write(dir.join(runs.get().to_string()), "").map_err(|e| e.to_string())
             })
@@ -684,7 +696,7 @@ mod tests {
 
     #[test]
     fn presets_and_error_hints() {
-        assert_eq!(Settings::detail("high").map(|s| s.steps), Some(30_000));
+        assert_eq!(Settings::detail(Detail::High).steps, 30_000);
         assert_eq!(
             spirula_hint(
                 "vkAllocateMemory: VK_ERROR_OUT_OF_DEVICE_MEMORY",
@@ -700,8 +712,8 @@ mod tests {
         let mut sent = Vec::new();
         let mut emit = |event| sent.push(event);
         let mut out = Report::new(&mut emit, [10.0, 100.0, 890.0]);
-        out.start(1, "frames", true);
-        out.start(2, "sfm", false);
+        out.start(0, "frames", true);
+        out.start(1, "sfm", false);
         out.started -= Duration::from_secs(20); // twice as slow as estimated
         out.sent = None;
         out.progress(0.1, "");

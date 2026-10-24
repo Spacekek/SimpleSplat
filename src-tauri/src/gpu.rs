@@ -41,43 +41,54 @@ pub fn detect(tools: Option<&Path>) -> Option<Gpu> {
 /// `spirula sam devices` prints a table (`idx name type vram uuid status`); on macOS, MoltenVK
 /// also logs `GPU memory available: 18186 MB`, Metal's working-set limit.
 fn parse(text: &str) -> Option<Gpu> {
-    let devices: Vec<(bool, String, u64)> = text
-        .lines()
-        .filter_map(|line| {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            let kind = words
-                .iter()
-                .position(|w| ["discrete", "integrated", "virtual", "cpu", "other"].contains(w))?;
-            let size: f64 = words.get(kind + 1)?.parse().ok()?;
-            let mib = size
-                * if *words.get(kind + 2)? == "G" {
-                    1024.0
-                } else {
-                    1.0
-                };
-            (words.first()?.parse::<u32>().is_ok() && words.last() == Some(&"ok")).then(|| {
-                (
-                    words[kind] == "discrete",
-                    words[1..kind].join(" "),
-                    mib as u64,
-                )
-            })
-        })
-        .collect();
-    let (_, name, mib) = devices.iter().find(|d| d.0).or(devices.first())?.clone();
-    let metal = text
+    let devices: Vec<(bool, Gpu)> = text.lines().filter_map(device).collect();
+    let (_, gpu) = devices
+        .iter()
+        .find(|(discrete, _)| *discrete)
+        .or(devices.first())?;
+    let metal: Option<u64> = text
         .split("GPU memory available: ")
         .nth(1)
         .and_then(|rest| rest.split_whitespace().next()?.parse().ok());
     Some(Gpu {
-        name,
-        mib: metal.map_or(mib, |m: u64| m.min(mib)),
+        name: gpu.name.clone(),
+        mib: metal.map_or(gpu.mib, |m| m.min(gpu.mib)),
     })
 }
 
-/// The stage of a run with `s` that needs the most GPU memory: its estimated peak in MiB, its
-/// name, and the settings that lower it.
-pub fn need(s: &Settings) -> (u64, &'static str, &'static str) {
+/// A usable device from a row of the `spirula sam devices` table, and whether it is discrete.
+fn device(row: &str) -> Option<(bool, Gpu)> {
+    let words: Vec<&str> = row.split_whitespace().collect();
+    let indexed = words.first()?.parse::<u32>().is_ok();
+    let ok = words.last() == Some(&"ok");
+    let kind = words
+        .iter()
+        .position(|w| ["discrete", "integrated", "virtual", "cpu", "other"].contains(w))?;
+    let size: f64 = words.get(kind + 1)?.parse().ok()?;
+    let unit = if *words.get(kind + 2)? == "G" {
+        1024.0
+    } else {
+        1.0
+    };
+    (indexed && ok).then(|| {
+        let gpu = Gpu {
+            name: words[1..kind].join(" "),
+            mib: (size * unit) as u64,
+        };
+        (words[kind] == "discrete", gpu)
+    })
+}
+
+/// The stage of a run that needs the most GPU memory.
+pub struct Need {
+    /// Its estimated peak.
+    pub mib: u64,
+    pub stage: &'static str,
+    /// The settings that lower it.
+    pub lower: &'static str,
+}
+
+pub fn need(s: &Settings) -> Need {
     let features = match s.sfm_quality {
         Quality::Low => 2048.0,
         Quality::Medium => 4096.0,
@@ -88,30 +99,32 @@ pub fn need(s: &Settings) -> (u64, &'static str, &'static str) {
     let train =
         FIXED_MIB + (s.max_splats as f64 * BYTES_PER_SPLAT + pixels * BYTES_PER_PIXEL) / 1048576.0;
     if sfm > train {
-        (
-            sfm as u64,
-            "Finding camera positions",
-            "Images to Use or Camera Position Quality",
-        )
+        Need {
+            mib: sfm as u64,
+            stage: "Finding camera positions",
+            lower: "Images to Use or Camera Position Quality",
+        }
     } else {
-        (
-            train as u64,
-            "Training",
-            "Max Splats, Max Image Size or Detail",
-        )
+        Need {
+            mib: train as u64,
+            stage: "Training",
+            lower: "Max Splats, Max Image Size or Detail",
+        }
     }
 }
 
-/// A warning when a run with `s` may not fit on `gpu` (the last tenth is kept free for the display
-/// and other programs).
+/// A warning when a run with `s` may not fit on `gpu`. The last tenth is kept free for the display
+/// and other programs.
 pub fn warning(s: &Settings, gpu: &Gpu) -> Option<String> {
-    let (need, stage, lower) = need(s);
-    (need * 10 > gpu.mib * 9).then(|| {
+    let need = need(s);
+    (need.mib as f64 > 0.9 * gpu.mib as f64).then(|| {
         format!(
-            "{stage} may need about {} of GPU memory, and {} has {}. If it fails, lower {lower}.",
-            gb(need),
+            "{} may need about {} of GPU memory, and {} has {}. If it fails, lower {}.",
+            need.stage,
+            gb(need.mib),
             gpu.name,
-            gb(gpu.mib)
+            gb(gpu.mib),
+            need.lower
         )
     })
 }
@@ -123,6 +136,7 @@ pub fn gb(mib: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::Detail;
 
     #[test]
     fn devices_and_estimates() {
@@ -142,9 +156,9 @@ mod tests {
         assert!(parse("No Vulkan devices found.").is_none());
 
         // High: SfM about 1.8 GB (measured 1.6), training 1.7 GB.
-        let mut s = Settings::detail("high").unwrap();
-        assert_eq!(need(&s).1, "Finding camera positions");
-        assert!(warning(&s, &gpu).is_none(), "{}", need(&s).0);
+        let mut s = Settings::detail(Detail::High);
+        assert_eq!(need(&s).stage, "Finding camera positions");
+        assert!(warning(&s, &gpu).is_none(), "{}", need(&s).mib);
         s.max_splats = 100_000_000;
         let text = warning(&s, &gpu).unwrap();
         assert!(text.starts_with("Training may need") && text.contains("RTX 3060 has 12.0 GB"));

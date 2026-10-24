@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Seconds per training step on an Apple M5 (15k steps of the test video took 11 minutes).
-// ponytail: linear in steps from one run; the speed seen while training corrects it
 const SECS_PER_STEP: f64 = 660.0 / 15_000.0;
+
+/// Spirula writes checkpoints without a line of their own; one untouched this long is complete.
+const SETTLED: Duration = Duration::from_secs(2);
 
 /// Seconds on an Apple M5 for `steps` training steps.
 pub(super) fn estimate(steps: u32) -> f64 {
@@ -61,7 +63,7 @@ pub(super) fn run(
     }
     let total = s.steps;
     let mut previewed = None;
-    let result = job.run(spirula, &mut |line| {
+    let result = job.run_tool(spirula, &mut |line| {
         if let Some(text) = memory_warning(line) {
             out.event(Event::Info { text });
         }
@@ -72,8 +74,7 @@ pub(super) fn run(
             done as f64 / total as f64,
             &format!("{} of {} steps", grouped(done), grouped(total)),
         );
-        // Checkpoints are written without a line of their own; one untouched for 2 s is complete.
-        if let Some(path) = newest_splat(exports, Duration::from_secs(2))
+        if let Some(path) = newest_splat(exports, SETTLED)
             && previewed.as_ref() != Some(&path)
         {
             previewed = Some(path.clone());
@@ -84,20 +85,16 @@ pub(super) fn run(
     if result.is_err() && !stopped {
         return Err(spirula_hint(&job.log_tail(), "Training failed").into());
     }
-    // Only the latest checkpoint is kept, so a stopped run's preview may have made way for a
-    // newer one; that one is complete, since the old one goes once it is written.
-    let newest = (if stopped {
+    let newest = if stopped {
+        // Only the latest checkpoint is kept, so the one previewed may have made way for a newer
+        // one; that one is complete, since the old one goes once it is written.
         previewed
             .filter(|p| p.exists())
-            .or_else(|| newest_splat(exports, Duration::from_secs(2)))
+            .or_else(|| newest_splat(exports, SETTLED))
+            .ok_or(STOPPED)?
     } else {
-        newest_splat(exports, Duration::ZERO)
-    })
-    .ok_or(if stopped {
-        STOPPED
-    } else {
-        "Training finished without writing a scene"
-    })?;
+        newest_splat(exports, Duration::ZERO).ok_or("Training finished without writing a scene")?
+    };
     fs::rename(newest, &scene).map_err(|e| e.to_string())?;
     // The rest is checkpoint state and settings.
     let _ = fs::remove_dir_all(exports);
