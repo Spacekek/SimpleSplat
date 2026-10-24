@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs src-tauri/tools (npm run tools) and a GPU: cargo test -- --ignored"]
+    #[ignore = "needs src-tauri/tools (python3 scripts/bundle_tools.py) and a GPU: cargo test -- --ignored"]
     fn detects_the_gpu_with_the_bundled_spirula() {
         let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/bin");
         let gpu = detect(Some(&tools)).expect("Spirula found no GPU");

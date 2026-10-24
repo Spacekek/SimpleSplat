@@ -1,5 +1,3 @@
-node_modules
-dist
 .cache
 src-tauri/tools
 .DS_Store

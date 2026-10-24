@@ -47,22 +47,16 @@
         in
         {
           inherit spirula;
-          default = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
+          default = pkgs.rustPlatform.buildRustPackage {
             pname = "simplesplat";
             version = (lib.importTOML ./src-tauri/Cargo.toml).package.version;
             src = self;
             cargoRoot = "src-tauri";
             buildAndTestSubdir = "src-tauri";
             cargoLock.lockFile = ./src-tauri/Cargo.lock;
-            npmDeps = pkgs.fetchNpmDeps {
-              inherit (finalAttrs) src;
-              hash = "sha256-5sLKAn0q13eEra12H1+JFyiwi28nuqKTTdA3H/P7rpk=";
-            };
 
             nativeBuildInputs = [
               pkgs.cargo-tauri.hook
-              pkgs.nodejs
-              pkgs.npmHooks.npmConfigHook
               pkgs.pkg-config
               pkgs.wrapGAppsHook3
             ];
@@ -79,7 +73,7 @@
               "--config"
               (builtins.toFile "tauri.nix.json" (
                 builtins.toJSON {
-                  build.beforeBuildCommand = "npm run build";
+                  build.beforeBuildCommand = null;
                   bundle.resources = [ ];
                 }
               ))
@@ -94,7 +88,7 @@
               mainProgram = "simplesplat";
               platforms = [ "x86_64-linux" ];
             };
-          });
+          };
         };
 
       devShells = forSystems (pkgs: {
@@ -106,7 +100,7 @@
               cargo
               rustfmt
               clippy
-              nodejs # the Tauri CLI comes from npm (@tauri-apps/cli)
+              cargo-tauri # cargo tauri dev / build
               python3
               cargo-about # license notices for release builds
               pkg-config

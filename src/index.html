@@ -3,9 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="vendor/supersplat-viewer/dist/viewer.css" />
+    <link rel="stylesheet" href="styles.css" />
     <title>SimpleSplat</title>
-    <script type="module" src="/src/main.ts"></script>
+    <!-- The 3D viewer imports PlayCanvas by package name; this says where those files are. -->
+    <script type="importmap">
+      { "imports": { "playcanvas": "./vendor/playcanvas/build/playcanvas.min.mjs", "playcanvas/": "./vendor/playcanvas/" } }
+    </script>
+    <script type="module" src="main.js"></script>
   </head>
   <body data-view="home">
     <section id="home">

@@ -3,12 +3,12 @@
   "productName": "SimpleSplat",
   "identifier": "com.simplesplat.desktop",
   "build": {
-    "beforeDevCommand": "npm run tools && npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run tools && npm run notices && npm run build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": { "script": "python3 scripts/bundle_tools.py", "wait": true },
+    "beforeBuildCommand": "python3 scripts/bundle_tools.py && python3 scripts/bundle_tools.py --app-notices",
+    "frontendDist": "../src"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "SimpleSplat",

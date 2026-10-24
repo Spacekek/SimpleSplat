@@ -36,11 +36,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -48,14 +43,13 @@ jobs:
           workspaces: src-tauri
           cache-on-failure: true # a failing job would otherwise compile every crate again next time
 
-      - uses: taiki-e/install-action@v2 # license notices of the Rust crates
+      - uses: taiki-e/install-action@v2 # the Tauri CLI, and cargo-about for the license notices
         with:
-          tool: cargo-about
+          tool: tauri-cli,cargo-about
 
-      - run: npm ci
-      # Downloads the tools (scripts/bundle_tools.py), builds the frontend and the installers.
-      - run: npx tauri build
-      # After the build: compiling needs the tools folder and the frontend to exist.
+      # Downloads the tools (scripts/bundle_tools.py) and builds the installers.
+      - run: cargo tauri build
+      # After the build: compiling needs the tools folder to exist.
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - uses: actions/upload-artifact@v4

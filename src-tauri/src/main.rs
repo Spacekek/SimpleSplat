@@ -124,6 +124,12 @@ fn defaults() -> [Settings; 3] {
     ["low", "medium", "high"].map(|d| Settings::detail(d).expect("a preset"))
 }
 
+/// GitHub repository ("owner/name") of a CI build, else "": only CI builds look for newer releases.
+#[tauri::command]
+fn repo() -> &'static str {
+    option_env!("GITHUB_REPOSITORY").unwrap_or("")
+}
+
 #[tauri::command]
 fn start(app: AppHandle, state: State<AppState>, request: Request) -> Result<(), String> {
     let s = settings(&request)?;
@@ -302,7 +308,8 @@ fn main() -> ExitCode {
             stop,
             allow_folder,
             defaults,
-            estimate
+            estimate,
+            repo
         ]);
     // macOS's own Quit (Cmd+Q) ends the app at once; this one asks first while a job runs.
     #[cfg(target_os = "macos")]

@@ -111,6 +111,9 @@ def main() -> None:
         out = OUT / "THIRD_PARTY_LICENSES" / "simplesplat"
         out.mkdir(parents=True, exist_ok=True)
         notices(ROOT / "src-tauri" / "Cargo.toml", out / "crates.txt")
+        # The 3D viewer's JavaScript, which ships inside the app.
+        for license in (ROOT / "src" / "vendor").glob("*/LICENSE"):
+            shutil.copy2(license, out / f"{license.parent.name}-LICENSE.txt")
         return
     stamp = OUT / ".stamp"
     if stamp.exists() and stamp.read_text() == STAMP:
