@@ -95,3 +95,14 @@
     </div>
   </form>
 </Dialog>
+
+<style>
+  :global(#settings) {
+    width: 640px;
+    height: min(720px, calc(100vh - 48px));
+  }
+
+  .intro {
+    margin: 0 2px 20px;
+  }
+</style>

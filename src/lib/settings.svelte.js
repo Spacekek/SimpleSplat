@@ -51,14 +51,17 @@ $effect.root(() => {
       localStorage.setItem("settings", json);
     } catch {}
   });
-  // The backend asks Spirula for the GPU once, then only estimates.
+  // The backend asks Spirula for the GPU once, then only estimates. An answer that arrives after the
+  // settings changed again is dropped.
   $effect(() => {
     if (!settings.presets.length) return;
+    let current = true;
     invoke("estimate", { request: request("") })
       .then((fit) => {
-        settings.fit = fit;
+        if (current) settings.fit = fit;
       })
       .catch(() => {});
+    return () => (current = false);
   });
 });
 

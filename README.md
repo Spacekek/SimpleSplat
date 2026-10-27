@@ -15,7 +15,7 @@ Plain `cargo build` and `cargo test` compile the window in from `dist/`, so run 
 
 Where things are:
 
-- `index.html` and `src/`: the window, in Svelte, built by Vite into `dist/`. `src/App.svelte` holds the views and dialogs from `src/lib/`, whose `.svelte.js` modules keep the settings, the running job and the release check. `src/adwaita.css` is the GNOME look, `src/styles.css` lays out the screens.
+- `index.html` and `src/`: the window, in Svelte, built by Vite into `dist/`. `src/App.svelte` holds the views and dialogs from `src/lib/`, whose `.svelte.js` modules keep the settings, the running job and the release check. `src/adwaita.css` is the GNOME look; each screen's layout is in its component.
 - `src-tauri/`: the Rust program. `src/main.rs` has the window's commands, `src/cli.rs` the CLI, `src/settings.rs` the Detail presets, `src/pipeline.rs` runs the three stages in `src/pipeline/` (frames, camera positions, training), `src/gpu.rs` the GPU memory check. `tauri.conf.json` (plus one file per platform) configures the app and its installers.
 - `scripts/bundle_tools.py`: downloads ffmpeg and Spirula into `src-tauri/tools`.
 - `docs/PLAN.md`: how the app works and why, and what is left to do.

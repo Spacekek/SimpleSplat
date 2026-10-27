@@ -7,7 +7,7 @@
 
   // The start screen: Detail and the two inputs, plus only what needs attention: a GPU memory
   // warning, a newer version, and what differs from the default settings.
-  let { onchoose, onsettings, onabout } = $props();
+  let { dragging, onchoose, onsettings, onabout } = $props();
   let menuOpen = $state(false);
 
   // The Settings button also says what differs from the defaults: custom settings, a chosen output folder.
@@ -25,8 +25,8 @@
 
 <svelte:document onclick={() => (menuOpen = false)} onkeydown={(e) => e.key === "Escape" && (menuOpen = false)} />
 
-<section id="home">
-  <HeaderBar>
+<section id="home" class={{ dragging }}>
+  <HeaderBar flat>
     {#snippet end()}
       <button
         type="button"
@@ -93,3 +93,92 @@
     </button>
   </footer>
 </section>
+
+<style>
+  /* A status page. */
+  #home {
+    position: relative;
+  }
+
+  .status-page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 0 24px 46px;
+    text-align: center;
+  }
+
+  .status-icon {
+    margin-bottom: 24px;
+  }
+
+  h1 {
+    font-size: 2em;
+    font-weight: 800;
+  }
+
+  .description {
+    max-width: 36ch;
+  }
+
+  .status-page .buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 24px;
+  }
+
+  /* Settings, bottom centre. */
+  .home-footer {
+    position: absolute;
+    inset: auto 0 16px;
+    display: flex;
+    justify-content: center;
+  }
+
+  .home-footer .btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 18px;
+    font-weight: 400;
+  }
+
+  /* Detail sits on the home screen: the one choice most runs need. */
+  .detail-picker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin-top: 16px;
+  }
+
+  .detail-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .detail-label {
+    font-weight: 700;
+  }
+
+  .detail-picker .warn {
+    max-width: 56ch;
+  }
+
+  /* Drop target highlight over the whole window. */
+  #home.dragging::after {
+    content: "";
+    position: absolute;
+    inset: 8px;
+    border: 2px dashed var(--accent-bg);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent-bg) 8%, transparent);
+    pointer-events: none;
+  }
+</style>

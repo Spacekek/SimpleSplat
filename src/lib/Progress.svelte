@@ -99,3 +99,140 @@
     {/each}
   </ol>
 </section>
+
+<style>
+  .progress-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 24px 12px;
+  }
+
+  .notes {
+    text-align: center;
+  }
+
+  /* Each step has its own bar, and the grid lines the bars up as one. */
+  .steps {
+    flex: none;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+    margin: 0;
+    padding: 12px 24px 16px;
+    list-style: none;
+    background: var(--headerbar-bg);
+    box-shadow: 0 -1px var(--shade);
+  }
+
+  .step-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  .step-head .label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 700;
+  }
+
+  .step .caption {
+    opacity: 0.55;
+  }
+
+  .status {
+    flex: none;
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid var(--fill-hover);
+    display: grid;
+    place-items: center;
+  }
+
+  li[data-state="running"] .status {
+    border-color: var(--fill-hover);
+    border-top-color: currentColor;
+    animation: spin 0.8s linear infinite;
+  }
+
+  li[data-state="done"] .status {
+    border: 0;
+    background: var(--accent-bg);
+  }
+
+  li[data-state="done"] .status::after {
+    content: "";
+    width: 9px;
+    height: 5px;
+    margin-top: -2px;
+    border: solid white;
+    border-width: 0 0 2px 2px;
+    transform: rotate(-45deg);
+  }
+
+  li[data-state="pending"] .step-head {
+    opacity: 0.55;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    li[data-state="running"] .status {
+      animation-duration: 3s;
+    }
+  }
+
+  .preview {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--card-bg);
+    box-shadow: var(--card-shadow);
+  }
+
+  #preview-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  :global(#explore-host:empty) {
+    display: none;
+  }
+
+  .preview-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    text-align: center;
+  }
+
+  /* Explore, bottom centre over the preview, with its note above it. */
+  .explore-bar {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    z-index: 2;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+</style>

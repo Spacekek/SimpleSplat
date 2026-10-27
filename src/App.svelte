@@ -20,15 +20,8 @@
   let settingsForm = $state();
   let captureHost = $state();
 
-  // The stylesheets show the current view, and adapt the header bars to the platform.
-  document.body.dataset.view = "home";
+  // The header bars adapt to the platform (adwaita.css).
   document.body.dataset.platform = platform;
-  $effect(() => {
-    document.body.dataset.view = view;
-  });
-  $effect(() => {
-    document.body.classList.toggle("dragging", dragging);
-  });
 
   // A video or photo folder starts a job; a finished .ply opens in the viewer.
   async function begin(path) {
@@ -73,7 +66,7 @@
 </script>
 
 {#if view === "home"}
-  <Home onchoose={begin} onsettings={() => (settingsOpen = true)} onabout={() => (aboutOpen = true)} />
+  <Home {dragging} onchoose={begin} onsettings={() => (settingsOpen = true)} onabout={() => (aboutOpen = true)} />
 {:else if view === "progress"}
   <Progress {captureHost} />
 {:else}
@@ -84,3 +77,22 @@
 <AboutDialog bind:open={aboutOpen} />
 <!-- Off-screen, where previews are rendered to be captured. -->
 <div id="capture-host" bind:this={captureHost}></div>
+
+<style>
+  /* Each view fills the window. */
+  :global(body > section) {
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    height: 100%;
+  }
+
+  /* The capture viewer needs a real size to render. */
+  #capture-host {
+    position: fixed;
+    left: -10000px;
+    top: 0;
+    width: 800px;
+    height: 450px;
+  }
+</style>

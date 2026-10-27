@@ -1,12 +1,11 @@
 <script>
   import { makeViewer } from "./viewer.js";
 
-  // A live viewer of `ply`, for as long as this component is shown. One that finishes loading after
-  // it was closed (or given another file) is discarded.
+  // A live viewer of `ply`, filling its positioned parent, for as long as this component is shown. One
+  // that finishes loading after it was closed (or given another file) is discarded.
   let { id, ply, viewDir } = $props();
-  let host;
 
-  $effect(() => {
+  function showViewer(host) {
     let viewer = null;
     let closed = false;
     makeViewer(host, ply, viewDir, true)
@@ -16,7 +15,14 @@
       closed = true;
       viewer?.destroy();
     };
-  });
+  }
 </script>
 
-<div {id} bind:this={host}></div>
+<div {id} {@attach showViewer}></div>
+
+<style>
+  div {
+    position: absolute;
+    inset: 0;
+  }
+</style>

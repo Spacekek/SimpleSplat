@@ -1,6 +1,5 @@
 import "@playcanvas/supersplat-viewer/viewer.css";
 import "./adwaita.css";
-import "./styles.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 

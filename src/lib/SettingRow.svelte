@@ -54,3 +54,9 @@
     <input type="checkbox" class="switch" {name} bind:checked={settings.values[name]} />
   {/if}
 </label>
+
+<style>
+  .defaults strong {
+    font-weight: 700;
+  }
+</style>

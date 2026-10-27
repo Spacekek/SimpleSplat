@@ -9,7 +9,7 @@
 </script>
 
 <section id="viewer">
-  <SplatViewer id="viewer-host" ply={scene} viewDir={dirOf(scene)} />
+  <SplatViewer ply={scene} viewDir={dirOf(scene)} />
   <HeaderBar osd>
     {#snippet start()}
       <button class="btn osd pill icon-label" onclick={onnew}>
@@ -27,3 +27,10 @@
     {/snippet}
   </HeaderBar>
 </section>
+
+<style>
+  #viewer {
+    position: relative;
+    background: #000;
+  }
+</style>
