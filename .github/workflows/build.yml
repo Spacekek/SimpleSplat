@@ -67,6 +67,7 @@ jobs:
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+          retention-days: 1
 
   # A pushed tag like v0.2.0 publishes the installers as a GitHub release, which the app's update
   # notice then finds.
