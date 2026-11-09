@@ -2,6 +2,10 @@
 
 Turn a phone video or a folder of photos into a Gaussian splat with one button. See [docs/PLAN.md](docs/PLAN.md).
 
+## AI usage note
+
+In its current stage this project has been created with heavy AI usage (Opus 5.5). My goal is to slowly take over so this is not like any other vibe coded abandoned project.
+
 ## Develop
 
 ```sh
